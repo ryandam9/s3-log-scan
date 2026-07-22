@@ -314,7 +314,9 @@ of keys under the prefix. Always scope the prefix to a cluster
 ### Output
 
 Matches go to stdout in completion order (non-deterministic under
-concurrency):
+concurrency) and are flushed as they are found — the writer flushes
+whenever its queue goes idle, so results appear promptly during a long
+scan while bursts still batch efficiently:
 
 ```
 s3://bucket/key:lineNo: text
