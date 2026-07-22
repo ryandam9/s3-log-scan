@@ -53,6 +53,10 @@ type ScanOptions struct {
 	MaxZipEntries       int
 	MaxZipExpandedBytes int64 // cumulative across all entries (§6.3)
 	TempDir             string
+
+	// limiter enforces the run-wide -max-total-matches cap; set by
+	// the engine before workers start. nil = unlimited.
+	limiter *matchLimiter
 }
 
 // ObjectOutcome reports what scanning one object produced.
@@ -268,8 +272,12 @@ func (e *expansionLimitedReader) Read(p []byte) (int, error) {
 }
 
 // done reports whether the object's termination condition is met:
-// max-matches reached, or -l satisfied (§8 termination rules).
+// the run-wide match cap, max-matches for this object, or -l
+// satisfied (§8 termination rules).
 func (s *objectScan) done() bool {
+	if s.opts.limiter.Satisfied() {
+		return true
+	}
 	if s.opts.MaxMatches > 0 && s.matches >= s.opts.MaxMatches {
 		return true
 	}
@@ -341,10 +349,17 @@ func (s *objectScan) scanLines(r io.Reader, zipEntry string) {
 		}
 
 		if s.opts.NamesOnly {
-			// M-12: count only after the writer accepted the result.
-			if !s.sawMatch && !s.writer.Emit(s.ctx, Result{Bucket: s.bucket, Key: s.desc.Key, KeyOnly: true}) {
-				s.ctxErr = s.ctx.Err()
-				return
+			if !s.sawMatch {
+				// The run-wide cap counts each reported object once.
+				if !s.opts.limiter.Reserve() {
+					return
+				}
+				// M-12: count only after the writer accepted the result.
+				if !s.writer.Emit(s.ctx, Result{Bucket: s.bucket, Key: s.desc.Key, KeyOnly: true}) {
+					s.opts.limiter.Release()
+					s.ctxErr = s.ctx.Err()
+					return
+				}
 			}
 			s.sawMatch = true
 			s.matches++
@@ -356,6 +371,9 @@ func (s *objectScan) scanLines(r io.Reader, zipEntry string) {
 			return
 		}
 
+		if !s.opts.limiter.Reserve() {
+			return // run-wide cap exhausted
+		}
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
 		if !s.writer.Emit(s.ctx, Result{
@@ -365,6 +383,7 @@ func (s *objectScan) scanLines(r io.Reader, zipEntry string) {
 			LineNo:   it.LineNo(),
 			Line:     lineCopy,
 		}) {
+			s.opts.limiter.Release()
 			s.ctxErr = s.ctx.Err()
 			return
 		}

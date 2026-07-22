@@ -45,6 +45,7 @@ type Options struct {
 	MaxUncompressedMiB  int64
 	MaxLineSizeMiB      int64
 	MaxMatches          int64
+	MaxTotalMatches     int64
 	NamesOnly           bool
 	DiscoverApps        bool
 	SmallestFirst       bool
@@ -84,6 +85,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.Int64Var(&o.MaxUncompressedMiB, "max-uncompressed-object-size", 512, "cumulative ZIP expansion budget in MiB")
 	fs.Int64Var(&o.MaxLineSizeMiB, "max-line-size", 4, "oversized-line truncation boundary in MiB")
 	fs.Int64Var(&o.MaxMatches, "max-matches", 0, "match cap per object; whole ZIP = one object (0 = unlimited)")
+	fs.Int64Var(&o.MaxTotalMatches, "max-total-matches", 0, "stop the whole run after this many matches (0 = unlimited)")
 	fs.BoolVar(&o.NamesOnly, "l", false, "names only; first-hit exit; best-effort application IDs")
 	fs.BoolVar(&o.DiscoverApps, "discover-apps", false, "with -l: read on until an application ID is found")
 	fs.BoolVar(&o.SmallestFirst, "smallest-first", false, "windowed approximate smallest-first ordering")
@@ -121,8 +123,11 @@ func (o *Options) Build() (*scan.Config, error) {
 	if o.SmallestFirstWindow < 1 {
 		return nil, fmt.Errorf("-smallest-first-window must be >= 1, got %d", o.SmallestFirstWindow)
 	}
-	if o.MaxSizeMiB < 0 || o.MaxUncompressedMiB < 0 || o.MaxMatches < 0 || o.MaxWarnings < 0 {
+	if o.MaxSizeMiB < 0 || o.MaxUncompressedMiB < 0 || o.MaxMatches < 0 || o.MaxTotalMatches < 0 || o.MaxWarnings < 0 {
 		return nil, fmt.Errorf("size, match, and warning limits must be >= 0")
+	}
+	if o.MaxTotalMatches > 0 && o.GrepPattern == "" {
+		return nil, fmt.Errorf("-max-total-matches requires -grep")
 	}
 	if o.MaxSizeMiB > maxSizeCapMiB {
 		return nil, fmt.Errorf("-max-size must be <= %d MiB (1 TiB), got %d", int64(maxSizeCapMiB), o.MaxSizeMiB)
@@ -169,6 +174,7 @@ func (o *Options) Build() (*scan.Config, error) {
 		ExpectedBucketOwner: o.ExpectedBucketOwner,
 		SanitizeOutput:      o.SanitizeOutput,
 		MaxWarnings:         o.MaxWarnings,
+		MaxTotalMatches:     o.MaxTotalMatches,
 		Progress:            o.Progress,
 		Verbose:             o.Verbose,
 	}

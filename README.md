@@ -51,6 +51,7 @@ reporting, and scripting with exit codes.
 -max-uncompressed-object-size MiB   cumulative ZIP expansion budget (default 512)
 -max-line-size MiB              oversized-line truncation boundary (default 4)
 -max-matches N                  per object; whole ZIP = one object (0 = unlimited)
+-max-total-matches N            stop the whole run after N matches (0 = unlimited)
 -l                              names only; first-hit exit; best-effort IDs
 -discover-apps                  with -l: read on until an application ID is found
 -smallest-first                 windowed approximate size ordering
@@ -193,6 +194,26 @@ At most 3 matching lines print per object, then the object is
 abandoned (saving the remaining download). Such objects count as
 `stopped early by request` in the summary — a deliberate cap, not an
 error, so the exit code stays 0.
+
+#### Stop the whole run after N matches
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/ -grep 'OutOfMemoryError' -max-total-matches 20
+```
+
+Where `-max-matches` caps each object, `-max-total-matches` caps the
+*run*: after exactly 20 matching lines have printed, listing stops, no
+new objects are fetched, and in-flight objects wind down (counted as
+`stopped early by request`, never as partial). The summary says so:
+
+```
+s3logscan: completed: -max-total-matches reached in 3.402s
+```
+
+Exit code 0 — a satisfied query, not an interruption. With `-l`, the
+cap counts reported object names instead of lines. This is the "show
+me a few examples and stop spending money" lever: combine with
+`-smallest-first` to sample matches from many small objects cheaply.
 
 #### Watch a long scan
 
