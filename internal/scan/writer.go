@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -30,6 +32,8 @@ type Writer struct {
 	out      *bufio.Writer
 	cancel   context.CancelFunc
 	sanitize bool
+	color    bool
+	grep     *Matcher // for highlight spans; nil in list-only mode
 
 	done     chan struct{}
 	mu       sync.Mutex
@@ -37,13 +41,19 @@ type Writer struct {
 }
 
 // NewWriter starts the writer goroutine. cancel is invoked on the
-// first write failure. Queue depth bounds queued output (§9).
-func NewWriter(out io.Writer, queueDepth int, sanitize bool, cancel context.CancelFunc) *Writer {
+// first write failure. Queue depth bounds queued output (§9). With
+// color enabled, keys, line numbers, and separators are tinted and
+// grep matches within the line are highlighted (grep is nil when
+// there is no content pattern). Color is applied after sanitization,
+// so scanned content can never inject sequences that look like ours.
+func NewWriter(out io.Writer, queueDepth int, sanitize, color bool, grep *Matcher, cancel context.CancelFunc) *Writer {
 	w := &Writer{
 		ch:       make(chan Result, queueDepth),
 		out:      bufio.NewWriterSize(out, 64*1024),
 		cancel:   cancel,
 		sanitize: sanitize,
+		color:    color,
+		grep:     grep,
 		done:     make(chan struct{}),
 	}
 	go w.run()
@@ -102,22 +112,75 @@ func (w *Writer) write(r Result) error {
 		entry = SanitizeString(entry)
 		line = Sanitize(line)
 	}
+	if !w.color {
+		if r.KeyOnly {
+			_, err := fmt.Fprintf(w.out, "s3://%s/%s\n", r.Bucket, key)
+			return err
+		}
+		// Grep-style: s3://bucket/key[!zipEntry]:lineNo: text (§7.2)
+		if entry != "" {
+			if _, err := fmt.Fprintf(w.out, "s3://%s/%s!%s:%d: ", r.Bucket, key, entry, r.LineNo); err != nil {
+				return err
+			}
+		} else {
+			if _, err := fmt.Fprintf(w.out, "s3://%s/%s:%d: ", r.Bucket, key, r.LineNo); err != nil {
+				return err
+			}
+		}
+		if _, err := w.out.Write(line); err != nil {
+			return err
+		}
+		return w.out.WriteByte('\n')
+	}
+
 	if r.KeyOnly {
-		_, err := fmt.Fprintf(w.out, "s3://%s/%s\n", r.Bucket, key)
+		_, err := fmt.Fprintf(w.out, "%ss3://%s/%s%s\n", ansiKey, r.Bucket, key, ansiReset)
 		return err
 	}
-	// Grep-style: s3://bucket/key[!zipEntry]:lineNo: text (§7.2)
+	var sb strings.Builder
+	sb.WriteString(ansiKey + "s3://" + r.Bucket + "/" + key + ansiReset)
 	if entry != "" {
-		if _, err := fmt.Fprintf(w.out, "s3://%s/%s!%s:%d: ", r.Bucket, key, entry, r.LineNo); err != nil {
-			return err
-		}
-	} else {
-		if _, err := fmt.Fprintf(w.out, "s3://%s/%s:%d: ", r.Bucket, key, r.LineNo); err != nil {
-			return err
-		}
+		sb.WriteString(ansiSep + "!" + ansiReset + ansiZip + entry + ansiReset)
 	}
-	if _, err := w.out.Write(line); err != nil {
+	sb.WriteString(ansiSep + ":" + ansiReset)
+	sb.WriteString(ansiLineNo + strconv.FormatInt(r.LineNo, 10) + ansiReset)
+	sb.WriteString(ansiSep + ":" + ansiReset + " ")
+	if _, err := w.out.WriteString(sb.String()); err != nil {
+		return err
+	}
+	if err := w.writeHighlighted(line); err != nil {
 		return err
 	}
 	return w.out.WriteByte('\n')
+}
+
+// writeHighlighted prints line with every pattern occurrence wrapped
+// in the match color. Spans are computed on the sanitized text — the
+// bytes actually printed.
+func (w *Writer) writeHighlighted(line []byte) error {
+	if w.grep == nil {
+		_, err := w.out.Write(line)
+		return err
+	}
+	last := 0
+	for _, sp := range w.grep.Spans(line) {
+		if sp[1] <= sp[0] {
+			continue
+		}
+		if _, err := w.out.Write(line[last:sp[0]]); err != nil {
+			return err
+		}
+		if _, err := w.out.WriteString(ansiMatch); err != nil {
+			return err
+		}
+		if _, err := w.out.Write(line[sp[0]:sp[1]]); err != nil {
+			return err
+		}
+		if _, err := w.out.WriteString(ansiReset); err != nil {
+			return err
+		}
+		last = sp[1]
+	}
+	_, err := w.out.Write(line[last:])
+	return err
 }

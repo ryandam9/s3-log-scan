@@ -85,6 +85,7 @@ s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/steps/
 -region string                  AWS region override
 -progress duration              status line to stderr every interval, e.g. 2s (0 = off)
 -verbose                        log listing pages and per-object scan starts (stderr)
+-color auto|always|never        colorize results (default auto: only on a terminal)
 ```
 
 Regex patterns use Go RE2 semantics: no lookaround, no backreferences.
@@ -131,6 +132,18 @@ concurrency):
 s3://bucket/key:lineNo: text
 s3://bucket/key!zipEntry:lineNo: text
 ```
+
+When stdout is a terminal, results are colored in GNU grep's palette:
+object keys magenta, ZIP entry names cyan, line numbers green,
+separators cyan, and every occurrence of the matched text within the
+line bold red. `-color` controls this: `auto` (default) colors only on
+a terminal and honors the `NO_COLOR` convention and `TERM=dumb`;
+`always` forces color (e.g. into `less -R`); `never` disables it.
+Piped or redirected output is byte-identical to the uncolored format
+above. Colors are applied after sanitization, so escape sequences
+inside scanned content can never masquerade as highlighting. When
+stderr is a terminal, the summary's status line, error counts, and
+discovered application IDs are tinted too.
 
 Output is sanitized by default (`-sanitize-output=false` to disable):
 C0/C1 control characters, DEL, invalid UTF-8 bytes, and deceptive Unicode

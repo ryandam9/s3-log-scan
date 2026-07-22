@@ -60,6 +60,7 @@ type Options struct {
 	Region              string
 	Progress            time.Duration
 	Verbose             bool
+	Color               string
 }
 
 // NewFlagSet binds all flags (§11) onto a fresh FlagSet.
@@ -98,6 +99,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.StringVar(&o.Region, "region", "", "AWS region override")
 	fs.DurationVar(&o.Progress, "progress", 0, "print a status line to stderr every interval, e.g. 2s (0 = off)")
 	fs.BoolVar(&o.Verbose, "verbose", false, "log each listing page and each object as scanning starts (stderr)")
+	fs.StringVar(&o.Color, "color", "auto", `colorize results: "auto" (only when stdout is a terminal), "always", or "never"`)
 	return fs, o
 }
 
@@ -148,6 +150,9 @@ func (o *Options) Build() (*scan.Config, error) {
 	}
 	if o.Progress > 0 && o.Progress < 100*time.Millisecond {
 		return nil, fmt.Errorf("-progress interval must be at least 100ms, got %s", o.Progress)
+	}
+	if o.Color != "auto" && o.Color != "always" && o.Color != "never" {
+		return nil, fmt.Errorf(`-color must be "auto", "always", or "never", got %q`, o.Color)
 	}
 
 	cfg := &scan.Config{

@@ -40,6 +40,7 @@ type Config struct {
 	ExpectedBucketOwner string
 
 	SanitizeOutput bool
+	ColorOutput    bool // ANSI-color stdout results (resolved by main from -color + TTY)
 	MaxWarnings    int
 
 	// Progress > 0 prints a one-line status to stderr every interval,
@@ -106,7 +107,7 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 	runCtx, cancel := context.WithCancel(runCtx)
 	defer cancel()
 
-	writer := NewWriter(stdout, e.cfg.Workers*8, e.cfg.SanitizeOutput, cancel)
+	writer := NewWriter(stdout, e.cfg.Workers*8, e.cfg.SanitizeOutput, e.cfg.ColorOutput, e.cfg.Scan.Grep, cancel)
 
 	work := make(chan ObjectDescriptor, e.cfg.Workers*2)
 	var listErr error

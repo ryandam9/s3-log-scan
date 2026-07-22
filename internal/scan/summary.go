@@ -9,20 +9,27 @@ import (
 // PrintSummary writes the end-of-run account to w (stderr). It always
 // prints — including after SIGINT — and separates objects scanned to
 // EOF, stopped early by request, partially scanned, skipped (with
-// reasons), and failed (§10, M-06).
-func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
+// reasons), and failed (§10, M-06). With color enabled (stderr is a
+// terminal), the status line and error counts are tinted.
+func PrintSummary(w io.Writer, r *RunResult, listOnly, color bool) {
+	paint := func(code, s string) string {
+		if !color {
+			return s
+		}
+		return code + s + ansiReset
+	}
 	c := r.Counters
 	fmt.Fprintln(w, "---")
-	status := "completed"
+	status := paint("\x1b[32m", "completed") // green
 	switch {
 	case r.Interrupted:
-		status = "interrupted"
+		status = paint("\x1b[33m", "interrupted") // yellow
 	case r.TimedOut:
-		status = "stopped: -overall-timeout exceeded"
+		status = paint("\x1b[33m", "stopped: -overall-timeout exceeded")
 	case r.WriteErr != nil:
-		status = fmt.Sprintf("stopped: stdout write failed (%v)", r.WriteErr)
+		status = paint("\x1b[31m", fmt.Sprintf("stopped: stdout write failed (%v)", r.WriteErr)) // red
 	case r.ListingErr != nil:
-		status = "failed while listing"
+		status = paint("\x1b[31m", "failed while listing")
 	}
 	fmt.Fprintf(w, "s3logscan: %s in %s\n", status, r.Elapsed.Round(1e6))
 
@@ -71,13 +78,13 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
 	appendErr(c.Throttled.Load(), "throttled")
 	appendErr(c.OtherErrors.Load(), "other")
 	if len(errs) > 0 {
-		fmt.Fprintf(w, "  object errors: %s\n", strings.Join(errs, ", "))
+		fmt.Fprintf(w, "  %s\n", paint("\x1b[31m", fmt.Sprintf("object errors: %s", strings.Join(errs, ", "))))
 	}
 
 	if ids := r.AppIDs.Sorted(); len(ids) > 0 {
 		fmt.Fprintf(w, "  application IDs discovered (%d):\n", len(ids))
 		for _, id := range ids {
-			fmt.Fprintf(w, "    %s\n", id)
+			fmt.Fprintf(w, "    %s\n", paint(ansiZip, id))
 		}
 	}
 }
