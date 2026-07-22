@@ -31,10 +31,47 @@ func TestGroupedBasic(t *testing.T) {
 		w.Emit(ctx, Result{Key: deep, GroupEnd: true})
 	})
 	want := "s3://b/" + deep + "\n" +
-		"  44: ERROR one\n" +
-		"  812: ERROR two\n"
+		"      44: ERROR one\n" +
+		"     812: ERROR two\n"
 	if got != want {
 		t.Fatalf("grouped output:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// Line numbers print as a fixed 6-character right-aligned field, so
+// the text column is identical within and across blocks.
+func TestGroupedLineNumberAlignment(t *testing.T) {
+	got := groupedWriterOutput(t, false, func(w *Writer) {
+		ctx := context.Background()
+		w.Emit(ctx, Result{Bucket: "b", Key: "k.log", LineNo: 1, Line: []byte("a")})
+		w.Emit(ctx, Result{Bucket: "b", Key: "k.log", LineNo: 1234, Line: []byte("b")})
+		w.Emit(ctx, Result{Bucket: "b", Key: "k.log", LineNo: 12345, Line: []byte("c")})
+		w.Emit(ctx, Result{Bucket: "b", Key: "k.log", LineNo: 1234567, Line: []byte("d")})
+		w.Emit(ctx, Result{Key: "k.log", GroupEnd: true})
+	})
+	want := "s3://b/k.log\n" +
+		"       1: a\n" +
+		"    1234: b\n" +
+		"   12345: c\n" +
+		"  1234567: d\n" // beyond 6 digits the field widens, never truncates
+	if got != want {
+		t.Fatalf("alignment:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// Zip entries keep the 6-wide number field after the entry name.
+func TestGroupedZipAlignment(t *testing.T) {
+	got := groupedWriterOutput(t, false, func(w *Writer) {
+		ctx := context.Background()
+		w.Emit(ctx, Result{Bucket: "b", Key: "a.zip", ZipEntry: "long-entry.log", LineNo: 7, Line: []byte("x")})
+		w.Emit(ctx, Result{Bucket: "b", Key: "a.zip", ZipEntry: "e.log", LineNo: 12345, Line: []byte("y")})
+		w.Emit(ctx, Result{Key: "a.zip", GroupEnd: true})
+	})
+	want := "s3://b/a.zip\n" +
+		"  long-entry.log:     7: x\n" +
+		"  e.log: 12345: y\n"
+	if got != want {
+		t.Fatalf("zip alignment:\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -50,9 +87,9 @@ func TestGroupedInterleavedObjects(t *testing.T) {
 		w.Emit(ctx, Result{Bucket: "b", Key: "x/one.log", LineNo: 12, Line: []byte("m4")})
 		w.Emit(ctx, Result{Key: "x/one.log", GroupEnd: true})
 	})
-	want := "s3://b/y/two.log\n  5: m2\n" +
+	want := "s3://b/y/two.log\n       5: m2\n" +
 		"\n" +
-		"s3://b/x/one.log\n  1: m1\n  9: m3\n  12: m4\n"
+		"s3://b/x/one.log\n       1: m1\n       9: m3\n      12: m4\n"
 	if got != want {
 		t.Fatalf("interleaved grouping:\n%q\nwant:\n%q", got, want)
 	}
@@ -69,7 +106,7 @@ func TestGroupedZipEntries(t *testing.T) {
 		w.Emit(ctx, Result{Bucket: "b", Key: "logs.zip", ZipEntry: "inner.log", LineNo: 3, Line: []byte("hit")})
 		w.Emit(ctx, Result{Key: "logs.zip", GroupEnd: true})
 	})
-	want := "s3://b/logs.zip\n  inner.log:3: hit\n"
+	want := "s3://b/logs.zip\n  inner.log:     3: hit\n"
 	if got != want {
 		t.Fatalf("zip grouping:\n%q\nwant:\n%q", got, want)
 	}
@@ -92,7 +129,7 @@ func TestGroupedFlushOnClose(t *testing.T) {
 		w.Emit(context.Background(), Result{Bucket: "b", Key: "cut.log", LineNo: 2, Line: []byte("found")})
 		// no GroupEnd
 	})
-	if !strings.Contains(got, "s3://b/cut.log\n  2: found\n") {
+	if !strings.Contains(got, "s3://b/cut.log\n       2: found\n") {
 		t.Fatalf("buffered match lost at close:\n%q", got)
 	}
 }
@@ -113,7 +150,7 @@ func TestGroupedColor(t *testing.T) {
 	}
 	got := out.String()
 	want := ansiKey + "s3://b/k.log" + ansiReset + "\n" +
-		"  " + ansiLineNo + "7" + ansiReset + ansiSep + ":" + ansiReset + " " +
+		"       " + ansiLineNo + "7" + ansiReset + ansiSep + ":" + ansiReset + " " +
 		"a " + ansiMatch + "hit" + ansiReset + " here\n"
 	if got != want {
 		t.Fatalf("colored group:\n%q\nwant:\n%q", got, want)

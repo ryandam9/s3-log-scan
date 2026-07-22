@@ -215,12 +215,21 @@ func (w *Writer) flushGroup(key string) error {
 		}
 	}
 
+	// Line numbers print as a fixed 6-character right-aligned field
+	// (wider only if a file exceeds 999,999 lines), so the matched
+	// text starts in the same column within and across blocks.
+	const lineNoWidth = 6
 	for _, r := range g.lines {
 		entry := r.ZipEntry
 		line := r.Line
 		if w.sanitize {
 			entry = SanitizeString(entry)
 			line = Sanitize(line)
+		}
+		lineNo := strconv.FormatInt(r.LineNo, 10)
+		pad := lineNoWidth - len(lineNo)
+		if pad < 0 {
+			pad = 0
 		}
 		var sb strings.Builder
 		sb.WriteString("  ")
@@ -231,7 +240,7 @@ func (w *Writer) flushGroup(key string) error {
 				sb.WriteString(entry + ":")
 			}
 		}
-		lineNo := strconv.FormatInt(r.LineNo, 10)
+		sb.WriteString(strings.Repeat(" ", pad))
 		if w.color {
 			sb.WriteString(ansiLineNo + lineNo + ansiReset + ansiSep + ":" + ansiReset + " ")
 		} else {
