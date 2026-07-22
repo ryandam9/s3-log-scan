@@ -65,7 +65,7 @@ func runObjectScan(t *testing.T, key string, body []byte, opts ScanOptions) scan
 	var out bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := NewWriter(&out, 64, true, false, nil, cancel)
+	w := NewWriter(&out, WriterConfig{QueueDepth: 64, Sanitize: true}, cancel)
 	var c Counters
 	desc := &ObjectDescriptor{Key: key, Size: int64(len(body))}
 	outcome := ScanObject(ctx, "test-bucket", desc, bytes.NewReader(body), DetectFormat(key), &opts, w, &c)

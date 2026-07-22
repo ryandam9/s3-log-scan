@@ -62,6 +62,7 @@ type Options struct {
 	Progress            time.Duration
 	Verbose             bool
 	Color               string
+	Group               bool
 }
 
 // NewFlagSet binds all flags (§11) onto a fresh FlagSet.
@@ -102,6 +103,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.DurationVar(&o.Progress, "progress", 0, "print a status line to stderr every interval, e.g. 2s (0 = off)")
 	fs.BoolVar(&o.Verbose, "verbose", false, "log each listing page and each object as scanning starts (stderr)")
 	fs.StringVar(&o.Color, "color", "auto", `colorize results: "auto" (only when stdout is a terminal), "always", or "never"`)
+	fs.BoolVar(&o.Group, "group", false, "print each object key once as a heading with its matches indented below")
 	return fs, o
 }
 
@@ -128,6 +130,12 @@ func (o *Options) Build() (*scan.Config, error) {
 	}
 	if o.MaxTotalMatches > 0 && o.GrepPattern == "" {
 		return nil, fmt.Errorf("-max-total-matches requires -grep")
+	}
+	if o.Group && o.GrepPattern == "" {
+		return nil, fmt.Errorf("-group requires -grep (list-only output is already one key per line)")
+	}
+	if o.Group && o.NamesOnly {
+		return nil, fmt.Errorf("-group cannot be combined with -l (names-only output is already one key per line)")
 	}
 	if o.MaxSizeMiB > maxSizeCapMiB {
 		return nil, fmt.Errorf("-max-size must be <= %d MiB (1 TiB), got %d", int64(maxSizeCapMiB), o.MaxSizeMiB)
@@ -175,6 +183,7 @@ func (o *Options) Build() (*scan.Config, error) {
 		SanitizeOutput:      o.SanitizeOutput,
 		MaxWarnings:         o.MaxWarnings,
 		MaxTotalMatches:     o.MaxTotalMatches,
+		GroupOutput:         o.Group,
 		Progress:            o.Progress,
 		Verbose:             o.Verbose,
 	}

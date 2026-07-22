@@ -34,7 +34,7 @@ func TestWriterFlushesWhenIdle(t *testing.T) {
 	var out syncBuffer
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := NewWriter(&out, 64, true, false, nil, cancel)
+	w := NewWriter(&out, WriterConfig{QueueDepth: 64, Sanitize: true}, cancel)
 
 	w.Emit(context.Background(), Result{Bucket: "b", Key: "k.log", LineNo: 3, Line: []byte("hit")})
 
