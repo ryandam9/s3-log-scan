@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,31 +27,35 @@ var (
 )
 
 func main() {
-	os.Exit(run())
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run() int {
-	fs, opts := config.NewFlagSet("s3logscan", os.Stderr)
+// run is main without process-global state, so exit codes and the
+// -h/-version paths are testable (M-04).
+func run(args []string, stdout, stderr io.Writer) int {
+	fs, opts := config.NewFlagSet("s3logscan", stderr)
 	showVersion := fs.Bool("version", false, "print version and exit")
-	if err := fs.Parse(os.Args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return 2
+			return 0 // help is an informational success, not a usage error
 		}
 		return 2
 	}
 	if *showVersion {
-		fmt.Printf("s3logscan %s (commit %s, built %s)\n", version, commit, date)
+		fmt.Fprintf(stdout, "s3logscan %s (commit %s, built %s)\n", version, commit, date)
 		return 0
 	}
 	cfg, err := opts.Build()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "s3logscan: %v\n", err)
+		fmt.Fprintf(stderr, "s3logscan: %v\n", err)
 		return 2
 	}
 	cfg.Scan.TempDir = os.TempDir()
 
 	// Prompt reaction to SIGINT/SIGTERM: cancel everything, still
-	// print the summary, exit 130 (§10).
+	// print the summary, exit 130 (§10). Only signal cancellation
+	// lives on this context; -overall-timeout is layered inside the
+	// engine so the two remain distinguishable (H-02).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -60,18 +65,18 @@ func run() int {
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "s3logscan: loading AWS configuration: %v\n", err)
+		fmt.Fprintf(stderr, "s3logscan: loading AWS configuration: %v\n", err)
 		return 2
 	}
 	client := s3.NewFromConfig(awsCfg)
 
-	engine := scan.NewEngine(cfg, client, os.Stderr)
-	result := engine.Run(ctx, os.Stdout)
+	engine := scan.NewEngine(cfg, client, stderr)
+	result := engine.Run(ctx, stdout)
 
 	engine.Warner().Flush()
 	if result.ListingErr != nil {
-		fmt.Fprintf(os.Stderr, "s3logscan: %v\n", result.ListingErr)
+		fmt.Fprintf(stderr, "s3logscan: %v\n", result.ListingErr)
 	}
-	scan.PrintSummary(os.Stderr, result, cfg.ListOnly)
+	scan.PrintSummary(stderr, result, cfg.ListOnly)
 	return scan.ExitCode(result)
 }

@@ -11,7 +11,7 @@ LDFLAGS := -X main.version=$(VERSION) \
 
 .PHONY: all fmt vet test build install clean run tidy lint help
 
-all: fmt vet test build install
+all: fmt vet test install
 
 fmt:
 	$(GO) fmt $(PKG)
@@ -47,11 +47,16 @@ clean:
 # run builds then runs the CLI; pass flags via ARGS, e.g.
 #   make run ARGS="-bucket my-emr-logs -prefix logs/j-1ABC/ -grep ERROR"
 #   make run ARGS="-bucket my-emr-logs -prefix logs/j-1ABC/ -l -discover-apps -grep 'Table not found' -F"
-# The leading '-' ignores the CLI's exit status: s3logscan uses exit codes
-# 1 (no matches) and 3 (object errors / partial scans) as meaningful
-# signals, not build failures, so `make run` should not abort on them.
+# Exit codes 1 (no matches) and 3 (object errors / partial scans) are
+# meaningful query outcomes, so they are tolerated; anything else — 2
+# (usage/config/listing failure), 130 (interrupted) — still fails the
+# make invocation.
 run: build
-	-./$(BINARY) $(ARGS)
+	@./$(BINARY) $(ARGS); rc=$$?; \
+	if [ $$rc -eq 0 ] || [ $$rc -eq 1 ] || [ $$rc -eq 3 ]; then \
+		exit 0; \
+	fi; \
+	exit $$rc
 
 tidy:
 	$(GO) mod tidy
@@ -71,7 +76,7 @@ help:
 	@echo "  build    - Build binary into $(BINARY) (version/commit/date injected)"
 	@echo "  install  - Build and install the binary to a bin dir (PREFIX= to override)"
 	@echo "  clean    - Remove the binary and bin/ directory"
-	@echo "  run      - Build and run the CLI; pass flags with ARGS=\"...\""
+	@echo "  run      - Build and run the CLI; pass flags with ARGS=\"...\" (exit 1/3 tolerated)"
 	@echo "  tidy     - Tidy go modules"
 	@echo "  lint     - Run golangci-lint (if installed)"
-	@echo "  all      - fmt + vet + test + build + install"
+	@echo "  all      - fmt + vet + test + install (install builds once)"

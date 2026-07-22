@@ -4,11 +4,12 @@
 
 | | |
 |---|---|
-| Version | 2.0 (draft for approval — no implementation yet) |
+| Version | 2.0 |
+| Status | **Implemented** (initial implementation in commit `7ebc696`; code-review fixes applied on top — see `S3_LOG_SCAN_CODE_REVIEW_20260722` findings) |
 | Date | 22 July 2026 |
 | Supersedes | v1.1 |
-| Inputs | v1.1 design; comprehensive design review `v1-review.md` (22 Jul 2026) |
-| Status of review findings | All four critical findings resolved by design; high findings resolved or explicitly scoped; disposition table in Appendix A |
+| Inputs | v1.1 design; comprehensive design review `v1-review.md` (22 Jul 2026); code review of 22 Jul 2026 |
+| Status of review findings | All four critical design findings resolved; disposition table in Appendix A. Post-implementation code review found four high-priority defects (timeout accounting, timeout exit semantics, single-ID discovery, archive restore state), all fixed in the current source |
 
 ---
 

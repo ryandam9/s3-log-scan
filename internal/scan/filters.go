@@ -33,7 +33,11 @@ const (
 
 // archivedClasses cannot be read without a restore. GLACIER_IR
 // (Instant Retrieval) is readable in real time and is deliberately not
-// listed here.
+// listed here. Objects in these classes with a readable restored copy
+// (per RestoreStatus) are scanned, not skipped (H-04). Objects in the
+// Intelligent-Tiering archive tiers keep StorageClass
+// INTELLIGENT_TIERING and are caught at GET time instead
+// (InvalidObjectState → archivedUnavailable).
 var archivedClasses = map[string]bool{
 	"GLACIER":      true,
 	"DEEP_ARCHIVE": true,
@@ -50,7 +54,7 @@ func (f *FilterConfig) Apply(d *ObjectDescriptor, c *Counters) FilterVerdict {
 		return VerdictFolderMarker
 	}
 
-	if archivedClasses[d.StorageClass] {
+	if archivedClasses[d.StorageClass] && !d.Restored {
 		c.ArchivedSkipped.Add(1)
 		return VerdictArchived
 	}
