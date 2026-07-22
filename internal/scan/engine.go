@@ -269,28 +269,47 @@ func (e *Engine) reportProgress(start time.Time, done <-chan struct{}) {
 		case <-done:
 			return
 		case <-ticker.C:
-			e.warner.Logf("progress: %s", e.progressLine(time.Since(start)))
+			e.warner.Logf("progress %s", e.progressLine(time.Since(start)))
 		}
 	}
 }
 
 // progressLine renders the current state of the run in one line.
+// Every field is fixed-width so successive lines align vertically and
+// the whole line stays comfortably inside a normal terminal width:
+//
+//	progress 00:00:30 listing  keys 250       kept 250       done 201       queue 49      match 13/203        dl 22.7 MiB   err 0
+//
+// keys = keys enumerated by the listing so far; kept = survived the
+// metadata filters (the download queue); done = finished objects
+// (including partial/errored); queue = kept minus done; match =
+// matching objects/lines; dl = compressed bytes downloaded.
 func (e *Engine) progressLine(elapsed time.Duration) string {
 	c := &e.counters
 	listing := "listing"
 	if e.listingDone.Load() {
-		listing = "listing done"
+		listing = "listed"
+	}
+	if e.cfg.ListOnly {
+		return fmt.Sprintf("%s %-7s  keys %-9d kept %-9d reported %d",
+			formatElapsed(elapsed), listing, c.Listed.Load(), c.Survived.Load(), c.MatchedObjects.Load())
 	}
 	completed := c.ScannedFully.Load() + c.StoppedEarly.Load() + c.ScannedPartially.Load() + c.ObjectErrors()
-	if e.cfg.ListOnly {
-		return fmt.Sprintf("%s elapsed | %s, %d keys seen | %d survived filters | %d reported",
-			elapsed.Round(time.Second), listing, c.Listed.Load(), c.Survived.Load(), c.MatchedObjects.Load())
-	}
-	return fmt.Sprintf("%s elapsed | %s, %d keys seen | %d survived filters | %d scanned, %d in flight/queued | matched %d objects / %d lines | %s downloaded | %d errors",
-		elapsed.Round(time.Second), listing, c.Listed.Load(), c.Survived.Load(),
+	match := fmt.Sprintf("%d/%d", c.MatchedObjects.Load(), c.MatchedLines.Load())
+	return fmt.Sprintf("%s %-7s  keys %-9d kept %-9d done %-9d queue %-7d match %-13s dl %-10s err %d",
+		formatElapsed(elapsed), listing, c.Listed.Load(), c.Survived.Load(),
 		completed, c.Survived.Load()-completed,
-		c.MatchedObjects.Load(), c.MatchedLines.Load(),
-		humanBytes(c.BytesDownloaded.Load()), c.ObjectErrors())
+		match, humanBytes(c.BytesDownloaded.Load()), c.ObjectErrors())
+}
+
+// formatElapsed renders a duration as hh:mm:ss so the elapsed column
+// keeps a constant width.
+func formatElapsed(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d / time.Hour)
+	m := int(d/time.Minute) % 60
+	s := int(d/time.Second) % 60
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }
 
 // humanBytes renders a byte count for progress lines.

@@ -206,15 +206,20 @@ s3logscan -bucket my-bucket -allow-whole-bucket-scan -grep kyneton -i -progress 
 ```
 
 ```
-s3logscan: progress: 14s elapsed | listing, 42000 keys seen | 3100 survived filters | 2905 scanned, 195 in flight/queued | matched 3 objects / 17 lines | 1.2 GiB downloaded | 0 errors
+s3logscan: progress 00:00:10 listing  keys 42000     kept 3100      done 2905      queue 195     match 3/17         dl 1.2 GiB    err 0
+s3logscan: progress 00:00:12 listing  keys 51000     kept 3810      done 3644      queue 166     match 5/29         dl 1.5 GiB    err 0
+s3logscan: progress 00:00:14 listed   keys 58211     kept 4302      done 4302      queue 0       match 6/31         dl 1.7 GiB    err 0
 ```
 
-Read it left to right: how long the run has been going; whether the
-listing is still enumerating ("listing" flips to "listing done"); keys
-seen so far; how many passed the filters (the actual download queue);
-how many of those are done vs still queued; matches so far; compressed
-bytes fetched; classified object errors. `-verbose` goes further and
-logs each listing page and each object as its scan starts:
+Columns are fixed-width, so successive lines align and moving numbers
+are easy to eyeball. Left to right: elapsed (hh:mm:ss); listing state
+("listing" flips to "listed" when enumeration finishes); `keys` seen
+by the listing so far; `kept` — survivors of the metadata filters,
+i.e. the download queue; `done` — objects finished (including partial
+and errored ones); `queue` — kept minus done, the backlog including
+in-flight objects; `match` — matching objects/lines; `dl` — compressed
+bytes downloaded; `err` — classified object errors. `-verbose` goes
+further and logs each listing page and each object as its scan starts:
 
 ```
 s3logscan: listed page of 1000 keys (23000 so far, 812 survived filters)
