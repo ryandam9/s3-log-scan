@@ -89,16 +89,29 @@ func (w *Writer) Close() error {
 func (w *Writer) run() {
 	defer close(w.done)
 	failed := false
+	fail := func(err error) {
+		w.mu.Lock()
+		w.writeErr = err
+		w.mu.Unlock()
+		w.cancel()
+		failed = true
+	}
 	for r := range w.ch {
 		if failed {
 			continue // drain so no worker blocks on a dead pipe
 		}
 		if err := w.write(r); err != nil {
-			w.mu.Lock()
-			w.writeErr = err
-			w.mu.Unlock()
-			w.cancel()
-			failed = true
+			fail(err)
+			continue
+		}
+		// Prompt output: flush whenever no further result is queued,
+		// so matches appear as they are found instead of sitting in
+		// the 64 KiB buffer until the run ends. Under a burst the
+		// queue stays non-empty and writes still batch.
+		if len(w.ch) == 0 {
+			if err := w.out.Flush(); err != nil {
+				fail(err)
+			}
 		}
 	}
 }
