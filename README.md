@@ -23,35 +23,15 @@ go build ./cmd/s3logscan
 
 ## Usage
 
-Known application — locate and read every log object belonging to a YARN
-application ID:
-
 ```
-s3logscan -bucket my-emr-logs \
-  -prefix logs/j-1ABC2DEF3GHI4/ \
-  -key application_1700000000000_0042 \
-  -grep 'ERROR|Exception'
+s3logscan -bucket <bucket> -prefix <prefix> -grep <pattern> [flags]
 ```
 
-Unknown application — discover which application produced an error, then
-drill in. Step logs are tiny and usually carry the failure summary, so
-smallest-first finds them quickly:
-
-```
-s3logscan -bucket my-emr-logs \
-  -prefix logs/j-1ABC2DEF3GHI4/ \
-  -grep 'Table or view not found' -F \
-  -l -discover-apps -smallest-first
-```
-
-The run summary prints the deduplicated set of application IDs discovered
-from object keys, matching lines, and preceding context.
-
-List-only mode (no downloads) — omit `-grep`:
-
-```
-s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/steps/
-```
+Grep-style matches go to stdout; diagnostics, progress, and the final
+summary go to stderr. Omit `-grep` for list-only mode (no downloads).
+See [Examples](#examples) below for the common workflows — known
+application, unknown-application discovery, time windows, progress
+reporting, and scripting with exit codes.
 
 ### Flags
 
@@ -91,6 +71,236 @@ s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/steps/
 Regex patterns use Go RE2 semantics: no lookaround, no backreferences.
 Use `-F` for fixed strings.
 
+### Examples
+
+Each example shows the command, what it prints, and why.
+
+#### Grep a prefix for a pattern
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/ -grep 'ERROR|Exception'
+```
+
+Matches print to stdout in grep style — key, line number, matched line —
+in completion order (whichever object finishes first prints first):
+
+```
+s3://my-emr-logs/logs/j-1ABC2DEF3GHI4/steps/s-2TAB55V93BXKQ/stderr.gz:44: 26/07/20 09:14:02 ERROR Client: Application diagnostics message: User class threw exception
+s3://my-emr-logs/logs/j-1ABC2DEF3GHI4/containers/application_1700000000000_0042/container_01_000001/stderr.gz:812: org.apache.spark.sql.AnalysisException: Table or view not found
+```
+
+On a terminal, the key is magenta, the line number green, and the text
+that matched (`ERROR`, `Exception`) bold red. The run ends with a
+summary on stderr:
+
+```
+---
+s3logscan: completed in 42.318s
+  listed 18211, survived filters 18195
+  filtered out: 16 folder markers
+  scanned to EOF 18195, stopped early by request 0, partially scanned 0
+  matched objects 2, matched lines 2
+  compressed bytes downloaded 483920114
+```
+
+Exit code 0: matches found, nothing skipped or failed.
+
+#### Scope to a known application
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/ \
+  -key application_1700000000000_0042 -grep 'ERROR' -i
+```
+
+`-key` filters *object keys* client-side before any download, so only
+container logs belonging to that application are fetched; `-i` makes
+the content match case-insensitive (`ERROR`, `error`, `Error`). The
+summary's `filtered out: ... key-pattern filtered` line shows how many
+downloads the key filter saved.
+
+#### Discover which application produced an error
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/ \
+  -grep 'Table or view not found' -F -l -discover-apps -smallest-first
+```
+
+- `-F` — the pattern is a literal string, not a regex.
+- `-l` — print only the names of matching objects, stop each object at
+  its first match.
+- `-discover-apps` — after a match, keep reading (without printing)
+  until a YARN application ID appears, so step logs whose keys carry
+  no ID still get attributed.
+- `-smallest-first` — scan small objects first; step logs are tiny and
+  usually contain the failure summary, so answers arrive in seconds.
+
+stdout carries just the object names:
+
+```
+s3://my-emr-logs/logs/j-1ABC2DEF3GHI4/steps/s-2TAB55V93BXKQ/stderr.gz
+```
+
+and the summary turns the discovery into your next query:
+
+```
+  application IDs discovered (1):
+    application_1700000000000_0042
+```
+
+#### List objects without downloading anything
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/steps/
+```
+
+Omitting `-grep` is list-only mode: survivors of the metadata filters
+print as `s3://bucket/key` lines and **no GetObject calls are made**.
+The summary says `list-only mode: N objects reported, no downloads`.
+Combine with `-key`, `-ext`, or a time window to preview exactly what
+a content scan would download.
+
+#### Restrict by time window
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/ \
+  -after 2026-07-20 -before 2026-07-21 -grep 'ERROR'
+```
+
+Scans only objects whose S3 `LastModified` falls on 2026-07-20 (UTC):
+date-only values mean UTC midnight, `-after` is inclusive, `-before`
+exclusive. RFC3339 works for finer control:
+`-after 2026-07-20T14:00:00+10:00`. Objects outside the window show up
+as `filtered out: N outside time window` — filtered from listing
+metadata, never downloaded.
+
+#### Restrict by extension
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/ -ext .gz,.log -grep 'OutOfMemoryError'
+```
+
+Only keys ending in `.gz` or `.log` (case-insensitive) are fetched;
+everything else counts under `extension filtered`.
+
+#### Cap the noise from repetitive logs
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/ \
+  -grep 'Connection refused' -max-matches 3
+```
+
+At most 3 matching lines print per object, then the object is
+abandoned (saving the remaining download). Such objects count as
+`stopped early by request` in the summary — a deliberate cap, not an
+error, so the exit code stays 0.
+
+#### Watch a long scan
+
+A broad scan can be quiet for a long time: S3 returns listing pages of
+~1,000 keys sequentially while workers download and scan concurrently,
+and nothing prints until a match, a warning, or the final summary.
+`-progress` makes the wait legible:
+
+```
+s3logscan -bucket my-bucket -allow-whole-bucket-scan -grep kyneton -i -progress 2s
+```
+
+```
+s3logscan: progress 00:00:10 listing  keys 42000     kept 3100      done 2905      queue 195     match 3/17         dl 1.2 GiB    err 0
+s3logscan: progress 00:00:12 listing  keys 51000     kept 3810      done 3644      queue 166     match 5/29         dl 1.5 GiB    err 0
+s3logscan: progress 00:00:14 listed   keys 58211     kept 4302      done 4302      queue 0       match 6/31         dl 1.7 GiB    err 0
+```
+
+Columns are fixed-width, so successive lines align and moving numbers
+are easy to eyeball. Left to right: elapsed (hh:mm:ss); listing state
+("listing" flips to "listed" when enumeration finishes); `keys` seen
+by the listing so far; `kept` — survivors of the metadata filters,
+i.e. the download queue; `done` — objects finished (including partial
+and errored ones); `queue` — kept minus done, the backlog including
+in-flight objects; `match` — matching objects/lines; `dl` — compressed
+bytes downloaded; `err` — classified object errors. `-verbose` goes
+further and logs each listing page and each object as its scan starts:
+
+```
+s3logscan: listed page of 1000 keys (23000 so far, 812 survived filters)
+s3logscan: scanning s3://my-bucket/notes/trip-log.txt (11.3 KiB)
+```
+
+Both write to stderr only — stdout stays pipeable — and neither counts
+against `-max-warnings`.
+
+#### Bound a scan in time
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/ -grep 'ERROR' \
+  -object-timeout 30s -overall-timeout 5m
+```
+
+`-object-timeout` abandons any single object after 30s (it becomes
+`partially scanned` with a `timeout` error). `-overall-timeout` stops
+the whole run at 5 minutes:
+
+```
+---
+s3logscan: stopped: -overall-timeout exceeded in 5m0.007s
+  ...
+```
+
+and exits 3 — a partial run, deliberately distinct from the 130 an
+operator's Ctrl+C produces, so automation can tell them apart.
+
+#### Force or forbid color
+
+```
+s3logscan ... -color always | less -R     # keep colors through a pager
+s3logscan ... -color never > matches.txt  # explicit, though auto already
+                                          # disables color for redirects
+```
+
+Default `auto` colors only when stdout is a terminal and honors
+`NO_COLOR` and `TERM=dumb`; piped output is byte-identical to the
+uncolored format.
+
+#### Whole-bucket scans and cross-region buckets
+
+```
+s3logscan -bucket mellow.pictures -allow-whole-bucket-scan -grep kyneton -i
+```
+
+An empty prefix requires the explicit `-allow-whole-bucket-scan` flag,
+because listing cost is proportional to the total key count. The
+bucket's region is auto-detected (here `ap-southeast-4`) — no `-region`
+needed even when your profile defaults elsewhere.
+
+#### Requester-pays and cross-account safety
+
+```
+s3logscan -bucket shared-logs -prefix team/ -grep 'ERROR' \
+  -request-payer requester -expected-bucket-owner 111122223333
+```
+
+`-request-payer requester` acknowledges you pay the request/transfer
+costs on a requester-pays bucket. `-expected-bucket-owner` makes every
+call fail unless the bucket belongs to that account — protection
+against bucket-name squatting across accounts.
+
+#### Use exit codes in scripts
+
+```sh
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ -grep 'ERROR' -F
+case $? in
+  0)   echo "errors found in logs" ;;
+  1)   echo "clean: no matches" ;;
+  3)   echo "matches may be incomplete: some objects failed or were partial" ;;
+  2)   echo "the scan itself failed (usage/credentials/listing)" ;;
+  130) echo "interrupted" ;;
+esac
+```
+
+Exit 3 is the one to watch in automation: the scan *completed*, but at
+least one object errored or was only partially scanned, so "no
+matches" printed alongside exit 3 is not proof of absence.
+
 ### What filtering does and does not save
 
 The prefix is the **only server-side filter**. `-key`, `-ext`, `-max-size`,
@@ -100,28 +310,6 @@ orders of magnitude — but listing time remains proportional to the number
 of keys under the prefix. Always scope the prefix to a cluster
 (`.../j-<CLUSTER>/`) where you can. Whole-bucket enumeration requires
 `-allow-whole-bucket-scan`.
-
-### Watching long runs
-
-A broad scan (especially `-allow-whole-bucket-scan`) can be quiet for a
-long time: S3 returns listing pages of ~1,000 keys sequentially while
-workers download and scan concurrently, and nothing prints until a
-match, a warning, or the final summary. Two flags make the wait
-legible, both writing to stderr so stdout stays pipeable:
-
-```
-s3logscan -bucket my-bucket -allow-whole-bucket-scan -grep kyneton -i -progress 2s
-```
-
-prints one status line per interval:
-
-```
-s3logscan: progress: 14s elapsed | listing, 42000 keys seen | 3100 survived filters | 2905 scanned, 195 in flight/queued | matched 3 objects / 17 lines | 1.2 GiB downloaded | 0 errors
-```
-
-`-verbose` additionally logs each listing page and each object as its
-scan starts — noisier, but shows exactly which key the tool is on.
-Progress and verbose lines never count against `-max-warnings`.
 
 ### Output
 
