@@ -80,7 +80,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			awsCfg.Region = region
 		}
 	}
-	client := s3.NewFromConfig(awsCfg)
+	client := newS3Client(awsCfg)
 
 	engine := scan.NewEngine(cfg, client, stderr)
 	result := engine.Run(ctx, stdout)
@@ -93,6 +93,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return scan.ExitCode(result)
 }
 
+// newS3Client builds the S3 client with response-checksum validation
+// set to WhenRequired. The SDK's default (WhenSupported) logs a
+// "Response has no supported checksum" WARN line for every GetObject
+// of an object uploaded without a modern checksum — one useless stderr
+// line per object on older buckets. Integrity is still covered by TLS,
+// the gzip/ZIP CRCs of compressed content, and the If-Match ETag
+// condition on every GET.
+func newS3Client(cfg aws.Config) *s3.Client {
+	return s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+	})
+}
+
 // resolveBucketRegion discovers which region a bucket lives in.
 // HeadBucket reports it in the response — via the BucketRegion field
 // on success, and via the x-amz-bucket-region header even on the
@@ -103,7 +116,7 @@ func resolveBucketRegion(ctx context.Context, cfg aws.Config, bucket string) (st
 	if probe.Region == "" {
 		probe.Region = "us-east-1"
 	}
-	client := s3.NewFromConfig(probe)
+	client := newS3Client(probe)
 	out, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
 	if err == nil {
 		if out.BucketRegion != nil && *out.BucketRegion != "" {
