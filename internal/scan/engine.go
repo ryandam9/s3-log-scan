@@ -274,7 +274,9 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 
 // reportProgress prints one status line per interval until scanning
 // finishes. Counters are atomic, so reading them here is race-free.
+// A one-time legend is printed first so the columns need no manual.
 func (e *Engine) reportProgress(start time.Time, done <-chan struct{}) {
+	e.warner.Logf("progress columns:%s", e.progressLegend())
 	ticker := time.NewTicker(e.cfg.Progress)
 	defer ticker.Stop()
 	for {
@@ -285,6 +287,29 @@ func (e *Engine) reportProgress(start time.Time, done <-chan struct{}) {
 			e.warner.Logf("progress %s", e.progressLine(time.Since(start)))
 		}
 	}
+}
+
+// progressLegend explains each field of the progress line in plain
+// language, shown once before the first progress line.
+func (e *Engine) progressLegend() string {
+	if e.cfg.ListOnly {
+		return `
+    00:00:00  time since the run started (hh:mm:ss)
+    listing   S3 is still enumerating keys; changes to "listed" when done
+    keys      objects the S3 listing has found so far
+    kept      objects that passed the filters and will be reported
+    reported  object names printed so far`
+	}
+	return `
+    00:00:00  time since the run started (hh:mm:ss)
+    listing   S3 is still enumerating keys; changes to "listed" when done
+    keys      objects the S3 listing has found so far
+    kept      objects that passed the filters and will be downloaded + scanned
+    done      objects finished (fully scanned, stopped early, or failed)
+    queue     objects still waiting or in flight (kept minus done)
+    match     matching objects / matching lines found so far
+    dl        compressed data downloaded from S3 so far
+    err       objects that failed (classified in the final summary)`
 }
 
 // progressLine renders the current state of the run in one line.

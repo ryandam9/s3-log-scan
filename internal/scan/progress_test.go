@@ -41,6 +41,21 @@ func TestEngineProgressLines(t *testing.T) {
 	if got := strings.Count(stderr, "progress "); got < 1 {
 		t.Fatalf("expected at least one progress line:\n%s", stderr)
 	}
+	// The legend prints exactly once, before the first progress line,
+	// and explains every column in plain language.
+	if got := strings.Count(stderr, "progress columns:"); got != 1 {
+		t.Fatalf("legend must print exactly once, got %d:\n%s", got, stderr)
+	}
+	legendPos := strings.Index(stderr, "progress columns:")
+	firstLine := strings.Index(stderr, "progress 00:")
+	if firstLine >= 0 && legendPos > firstLine {
+		t.Fatalf("legend must precede the first progress line:\n%s", stderr)
+	}
+	for _, term := range []string{"time since the run started", "passed the filters", "kept minus done", "matching objects / matching lines", "downloaded from S3", "objects that failed"} {
+		if !strings.Contains(stderr, term) {
+			t.Fatalf("legend missing explanation %q:\n%s", term, stderr)
+		}
+	}
 	for _, field := range []string{"keys ", "kept ", "done ", "queue ", "match ", "dl ", "err "} {
 		if !strings.Contains(stderr, field) {
 			t.Fatalf("progress line missing %q:\n%s", field, stderr)
@@ -50,10 +65,12 @@ func TestEngineProgressLines(t *testing.T) {
 	// the same byte offset, so successive lines align vertically.
 	var offsets map[string]int
 	for _, line := range strings.Split(stderr, "\n") {
-		i := strings.Index(line, "progress ")
+		// Only status lines ("progress hh:mm:ss ..."), not the legend.
+		i := strings.Index(line, "progress 0")
 		if i < 0 {
 			continue
 		}
+		i = strings.Index(line, "progress ")
 		line = line[i:]
 		cur := map[string]int{}
 		for _, label := range []string{"keys ", "kept ", "done ", "queue ", "match ", "dl ", "err "} {
@@ -123,6 +140,10 @@ func TestProgressLineListOnly(t *testing.T) {
 	}
 	if !strings.HasPrefix(line, "00:00:03 ") {
 		t.Fatalf("elapsed must be fixed-width hh:mm:ss: %q", line)
+	}
+	legend := e.progressLegend()
+	if !strings.Contains(legend, "reported") || strings.Contains(legend, "dl ") {
+		t.Fatalf("list-only legend must match the list-only columns: %q", legend)
 	}
 }
 

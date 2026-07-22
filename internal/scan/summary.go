@@ -3,14 +3,26 @@ package scan
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+)
+
+// Summary tints (stderr): neutral counts cyan, good outcomes green,
+// cautionary counts yellow, failures red; zero values are dimmed so
+// the numbers that actually moved stand out.
+const (
+	sumCyan   = "\x1b[36m"
+	sumGreen  = "\x1b[32m"
+	sumYellow = "\x1b[33m"
+	sumRed    = "\x1b[31m"
+	sumDim    = "\x1b[2m"
 )
 
 // PrintSummary writes the end-of-run account to w (stderr). It always
 // prints — including after SIGINT — and separates objects scanned to
 // EOF, stopped early by request, partially scanned, skipped (with
 // reasons), and failed (§10, M-06). With color enabled (stderr is a
-// terminal), the status line and error counts are tinted.
+// terminal), the status line and every count are tinted.
 func PrintSummary(w io.Writer, r *RunResult, listOnly, color bool) {
 	paint := func(code, s string) string {
 		if !color {
@@ -18,29 +30,42 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly, color bool) {
 		}
 		return code + s + ansiReset
 	}
+	// num colors a count; zeros are dimmed regardless of the tint so
+	// non-zero values stand out.
+	num := func(code string, n int64) string {
+		s := strconv.FormatInt(n, 10)
+		if !color {
+			return s
+		}
+		if n == 0 {
+			return sumDim + s + ansiReset
+		}
+		return code + s + ansiReset
+	}
 	c := r.Counters
 	fmt.Fprintln(w, "---")
-	status := paint("\x1b[32m", "completed") // green
+	status := paint(sumGreen, "completed")
 	switch {
 	case r.MatchLimitHit && !r.Interrupted && r.WriteErr == nil && r.ListingErr == nil:
-		status = paint("\x1b[32m", "completed: -max-total-matches reached")
+		status = paint(sumGreen, "completed: -max-total-matches reached")
 	case r.Interrupted:
-		status = paint("\x1b[33m", "interrupted") // yellow
+		status = paint(sumYellow, "interrupted")
 	case r.TimedOut:
-		status = paint("\x1b[33m", "stopped: -overall-timeout exceeded")
+		status = paint(sumYellow, "stopped: -overall-timeout exceeded")
 	case r.WriteErr != nil:
-		status = paint("\x1b[31m", fmt.Sprintf("stopped: stdout write failed (%v)", r.WriteErr)) // red
+		status = paint(sumRed, fmt.Sprintf("stopped: stdout write failed (%v)", r.WriteErr))
 	case r.ListingErr != nil:
-		status = paint("\x1b[31m", "failed while listing")
+		status = paint(sumRed, "failed while listing")
 	}
 	fmt.Fprintf(w, "s3logscan: %s in %s\n", status, r.Elapsed.Round(1e6))
 
-	fmt.Fprintf(w, "  listed %d, survived filters %d\n", c.Listed.Load(), c.Survived.Load())
+	fmt.Fprintf(w, "  listed %s, survived filters %s\n",
+		num(sumCyan, c.Listed.Load()), num(sumCyan, c.Survived.Load()))
 
 	var skips []string
 	appendSkip := func(n int64, label string) {
 		if n > 0 {
-			skips = append(skips, fmt.Sprintf("%d %s", n, label))
+			skips = append(skips, fmt.Sprintf("%s %s", num(sumYellow, n), label))
 		}
 	}
 	appendSkip(c.FoldersSkipped.Load(), "folder markers")
@@ -54,14 +79,17 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly, color bool) {
 	}
 
 	if listOnly {
-		fmt.Fprintf(w, "  list-only mode: %d objects reported, no downloads\n", c.MatchedObjects.Load())
+		fmt.Fprintf(w, "  list-only mode: %s objects reported, no downloads\n", num(sumGreen, c.MatchedObjects.Load()))
 	} else {
-		fmt.Fprintf(w, "  scanned to EOF %d, stopped early by request %d, partially scanned %d\n",
-			c.ScannedFully.Load(), c.StoppedEarly.Load(), c.ScannedPartially.Load())
-		fmt.Fprintf(w, "  matched objects %d, matched lines %d\n", c.MatchedObjects.Load(), c.MatchedLines.Load())
-		fmt.Fprintf(w, "  compressed bytes downloaded %d\n", c.BytesDownloaded.Load())
+		fmt.Fprintf(w, "  scanned to EOF %s, stopped early by request %s, partially scanned %s\n",
+			num(sumGreen, c.ScannedFully.Load()), num(sumCyan, c.StoppedEarly.Load()), num(sumYellow, c.ScannedPartially.Load()))
+		fmt.Fprintf(w, "  matched objects %s, matched lines %s\n",
+			num(sumGreen, c.MatchedObjects.Load()), num(sumGreen, c.MatchedLines.Load()))
+		dl := c.BytesDownloaded.Load()
+		fmt.Fprintf(w, "  downloaded %s (%s compressed bytes)\n",
+			paint(sumCyan, humanBytes(dl)), num(sumCyan, dl))
 		if n := c.OversizedLines.Load(); n > 0 {
-			fmt.Fprintf(w, "  oversized lines truncated %d\n", n)
+			fmt.Fprintf(w, "  oversized lines truncated %s\n", num(sumYellow, n))
 		}
 	}
 
@@ -84,7 +112,7 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly, color bool) {
 	}
 
 	if ids := r.AppIDs.Sorted(); len(ids) > 0 {
-		fmt.Fprintf(w, "  application IDs discovered (%d):\n", len(ids))
+		fmt.Fprintf(w, "  application IDs discovered (%s):\n", num(sumGreen, int64(len(ids))))
 		for _, id := range ids {
 			fmt.Fprintf(w, "    %s\n", paint(ansiZip, id))
 		}
