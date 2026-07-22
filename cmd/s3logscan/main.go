@@ -18,17 +18,29 @@ import (
 	"github.com/ryandam9/s3-log-scan/internal/scan"
 )
 
+// Injected at build time via -ldflags (see Makefile).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	os.Exit(run())
 }
 
 func run() int {
 	fs, opts := config.NewFlagSet("s3logscan", os.Stderr)
+	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 2
 		}
 		return 2
+	}
+	if *showVersion {
+		fmt.Printf("s3logscan %s (commit %s, built %s)\n", version, commit, date)
+		return 0
 	}
 	cfg, err := opts.Build()
 	if err != nil {
