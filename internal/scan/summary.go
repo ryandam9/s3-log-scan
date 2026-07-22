@@ -22,6 +22,8 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly, color bool) {
 	fmt.Fprintln(w, "---")
 	status := paint("\x1b[32m", "completed") // green
 	switch {
+	case r.MatchLimitHit && !r.Interrupted && r.WriteErr == nil && r.ListingErr == nil:
+		status = paint("\x1b[32m", "completed: -max-total-matches reached")
 	case r.Interrupted:
 		status = paint("\x1b[33m", "interrupted") // yellow
 	case r.TimedOut:

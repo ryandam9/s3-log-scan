@@ -43,6 +43,11 @@ type Config struct {
 	ColorOutput    bool // ANSI-color stdout results (resolved by main from -color + TTY)
 	MaxWarnings    int
 
+	// MaxTotalMatches stops the whole run after this many matches
+	// have been reported (0 = unlimited). Objects cut short by it are
+	// counted as stopped early by request, never as partial.
+	MaxTotalMatches int64
+
 	// Progress > 0 prints a one-line status to stderr every interval,
 	// so long scans are distinguishable from hangs. Verbose logs each
 	// listing page and each object as scanning starts. Both write to
@@ -54,13 +59,14 @@ type Config struct {
 // RunResult is what the engine hands back to main for exit-code and
 // summary decisions.
 type RunResult struct {
-	Counters    *Counters
-	AppIDs      *AppIDSet
-	ListingErr  error // fatal: exit 2
-	WriteErr    error // stdout failed (EPIPE etc.)
-	TimedOut    bool  // -overall-timeout expired (exit 3, H-02)
-	Interrupted bool  // external cancellation: SIGINT/SIGTERM (exit 130)
-	Elapsed     time.Duration
+	Counters      *Counters
+	AppIDs        *AppIDSet
+	ListingErr    error // fatal: exit 2
+	WriteErr      error // stdout failed (EPIPE etc.)
+	TimedOut      bool  // -overall-timeout expired (exit 3, H-02)
+	Interrupted   bool  // external cancellation: SIGINT/SIGTERM (exit 130)
+	MatchLimitHit bool  // -max-total-matches reached; a successful early stop
+	Elapsed       time.Duration
 }
 
 // Engine wires lister → scheduler → workers → writer. An Engine is
@@ -106,6 +112,9 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 	// The writer owns this cancel: any stdout failure stops the run.
 	runCtx, cancel := context.WithCancel(runCtx)
 	defer cancel()
+
+	// The run-wide match cap must be wired before any worker starts.
+	e.cfg.Scan.limiter = newMatchLimiter(e.cfg.MaxTotalMatches)
 
 	writer := NewWriter(stdout, e.cfg.Workers*8, e.cfg.SanitizeOutput, e.cfg.ColorOutput, e.cfg.Scan.Grep, cancel)
 
@@ -157,11 +166,12 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 	writeErr := writer.Close()
 
 	res := &RunResult{
-		Counters:   &e.counters,
-		AppIDs:     e.appIDs,
-		ListingErr: listErr,
-		WriteErr:   writeErr,
-		Elapsed:    time.Since(start),
+		Counters:      &e.counters,
+		AppIDs:        e.appIDs,
+		ListingErr:    listErr,
+		WriteErr:      writeErr,
+		MatchLimitHit: e.cfg.Scan.limiter.Satisfied(),
+		Elapsed:       time.Since(start),
 	}
 	// Classify why the run context ended, if it did (H-02): external
 	// signal, configured deadline, or writer-driven cancellation
@@ -187,6 +197,9 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 	}
 
 	send := func(d ObjectDescriptor) bool {
+		if e.cfg.Scan.limiter.Satisfied() {
+			return false // run-wide match cap reached; stop feeding work
+		}
 		select {
 		case work <- d:
 			return true
@@ -211,7 +224,7 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 
 	paginator := s3.NewListObjectsV2Paginator(e.client, input)
 	for paginator.HasMorePages() {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || e.cfg.Scan.limiter.Satisfied() {
 			return nil
 		}
 		page, err := paginator.NextPage(ctx)
@@ -337,8 +350,9 @@ func restoredCopyAvailable(rs *types.RestoreStatus) bool {
 // accounts the outcome.
 func (e *Engine) worker(ctx context.Context, work <-chan ObjectDescriptor, zipSem chan struct{}, writer *Writer) {
 	for d := range work {
-		if ctx.Err() != nil {
-			// Keep draining so the lister never blocks after cancel.
+		if ctx.Err() != nil || e.cfg.Scan.limiter.Satisfied() {
+			// Keep draining so the lister never blocks after cancel
+			// or after the run-wide match cap is reached.
 			continue
 		}
 		e.scanOne(ctx, d, zipSem, writer)
