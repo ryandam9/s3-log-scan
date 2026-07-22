@@ -194,7 +194,7 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 			if ctx.Err() != nil {
 				return nil // cancellation, not a listing failure
 			}
-			return fmt.Errorf("listing s3://%s/%s: %w", e.cfg.Bucket, e.cfg.Prefix, err)
+			return fmt.Errorf("listing s3://%s/%s: %w%s", e.cfg.Bucket, e.cfg.Prefix, err, regionHint(err))
 		}
 		for _, obj := range page.Contents {
 			e.counters.Listed.Add(1)
@@ -355,6 +355,21 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n.Add(int64(n))
 	return n, err
+}
+
+// regionHint appends actionable advice when an S3 error is the classic
+// region-mismatch signature: the request was signed for (or sent to) a
+// different region than the bucket's.
+func regionHint(err error) string {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return ""
+	}
+	switch apiErr.ErrorCode() {
+	case "IllegalLocationConstraintException", "PermanentRedirect", "AuthorizationHeaderMalformed":
+		return " (the bucket lives in a different region than this request used; rerun with -region <bucket-region>)"
+	}
+	return ""
 }
 
 // classifyRequestError buckets GetObject failures (§10, H-05, M-10).

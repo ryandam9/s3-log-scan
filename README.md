@@ -186,6 +186,14 @@ Credentials resolve through the standard chain (environment variables,
 When the bucket uses SSE-KMS, also grant `kms:Decrypt` on the bucket key.
 KMS denials are reported under the `accessDenied` error class.
 
+- **Cross-region buckets work automatically.** When `-region` is not
+  given, the bucket's region is discovered up front (via `HeadBucket`,
+  whose response names the bucket region even on wrong-region or
+  access-denied probes) and used for all requests — so a bucket in,
+  say, `ap-southeast-4` scans correctly from a client configured for
+  another region. An explicit `-region` always wins and skips the
+  probe; if a region mismatch still surfaces, the listing error says
+  to rerun with `-region <bucket-region>`.
 - `-expected-bucket-owner <account-id>` guards against cross-account
   bucket confusion.
 - `-request-payer requester` supports requester-pays buckets.

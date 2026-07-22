@@ -12,6 +12,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
@@ -68,6 +70,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "s3logscan: loading AWS configuration: %v\n", err)
 		return 2
 	}
+	// Unless -region was given explicitly, resolve the bucket's actual
+	// region so cross-region buckets work without configuration
+	// (IllegalLocationConstraintException / PermanentRedirect
+	// otherwise). Detection failures fall back to the configured
+	// region and let the real operation report its error.
+	if opts.Region == "" {
+		if region, ok := resolveBucketRegion(ctx, awsCfg, opts.Bucket); ok {
+			awsCfg.Region = region
+		}
+	}
 	client := s3.NewFromConfig(awsCfg)
 
 	engine := scan.NewEngine(cfg, client, stderr)
@@ -79,4 +91,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	scan.PrintSummary(stderr, result, cfg.ListOnly)
 	return scan.ExitCode(result)
+}
+
+// resolveBucketRegion discovers which region a bucket lives in.
+// HeadBucket reports it in the response — via the BucketRegion field
+// on success, and via the x-amz-bucket-region header even on the
+// 301/403 responses a wrong-region or access-restricted probe gets.
+// The probe uses us-east-1 when no region is configured at all.
+func resolveBucketRegion(ctx context.Context, cfg aws.Config, bucket string) (string, bool) {
+	probe := cfg.Copy()
+	if probe.Region == "" {
+		probe.Region = "us-east-1"
+	}
+	client := s3.NewFromConfig(probe)
+	out, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
+	if err == nil {
+		if out.BucketRegion != nil && *out.BucketRegion != "" {
+			return *out.BucketRegion, true
+		}
+		return probe.Region, true
+	}
+	var respErr *awshttp.ResponseError
+	if errors.As(err, &respErr) && respErr.Response != nil {
+		if region := respErr.Response.Header.Get("x-amz-bucket-region"); region != "" {
+			return region, true
+		}
+	}
+	return "", false
 }
