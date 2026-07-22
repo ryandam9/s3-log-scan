@@ -226,21 +226,28 @@ and nothing prints until a match, a warning, or the final summary.
 s3logscan -bucket my-bucket -allow-whole-bucket-scan -grep kyneton -i -progress 2s
 ```
 
+A legend prints once before the first status line, so the columns are
+self-explanatory right in the terminal:
+
 ```
+s3logscan: progress columns:
+    00:00:00  time since the run started (hh:mm:ss)
+    listing   S3 is still enumerating keys; changes to "listed" when done
+    keys      objects the S3 listing has found so far
+    kept      objects that passed the filters and will be downloaded + scanned
+    done      objects finished (fully scanned, stopped early, or failed)
+    queue     objects still waiting or in flight (kept minus done)
+    match     matching objects / matching lines found so far
+    dl        compressed data downloaded from S3 so far
+    err       objects that failed (classified in the final summary)
 s3logscan: progress 00:00:10 listing  keys 42000     kept 3100      done 2905      queue 195     match 3/17         dl 1.2 GiB    err 0
 s3logscan: progress 00:00:12 listing  keys 51000     kept 3810      done 3644      queue 166     match 5/29         dl 1.5 GiB    err 0
 s3logscan: progress 00:00:14 listed   keys 58211     kept 4302      done 4302      queue 0       match 6/31         dl 1.7 GiB    err 0
 ```
 
 Columns are fixed-width, so successive lines align and moving numbers
-are easy to eyeball. Left to right: elapsed (hh:mm:ss); listing state
-("listing" flips to "listed" when enumeration finishes); `keys` seen
-by the listing so far; `kept` — survivors of the metadata filters,
-i.e. the download queue; `done` — objects finished (including partial
-and errored ones); `queue` — kept minus done, the backlog including
-in-flight objects; `match` — matching objects/lines; `dl` — compressed
-bytes downloaded; `err` — classified object errors. `-verbose` goes
-further and logs each listing page and each object as its scan starts:
+are easy to eyeball. `-verbose` goes further and logs each listing
+page and each object as its scan starts:
 
 ```
 s3logscan: listed page of 1000 keys (23000 so far, 812 survived filters)
