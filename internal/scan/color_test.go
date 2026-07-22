@@ -108,13 +108,38 @@ func TestColorAfterSanitize(t *testing.T) {
 func TestSummaryColor(t *testing.T) {
 	var sb strings.Builder
 	res := &RunResult{Counters: &Counters{}, AppIDs: NewAppIDSet()}
+	res.Counters.Listed.Store(106)
+	res.Counters.Survived.Store(106)
+	res.Counters.ScannedFully.Store(106)
+	res.Counters.MatchedObjects.Store(3)
+	res.Counters.MatchedLines.Store(12)
+	res.Counters.ScannedPartially.Store(2)
+
 	PrintSummary(&sb, res, false, true)
-	if !strings.Contains(sb.String(), "\x1b[32mcompleted"+ansiReset) {
-		t.Fatalf("status not tinted:\n%q", sb.String())
+	out := sb.String()
+	if !strings.Contains(out, "\x1b[32mcompleted"+ansiReset) {
+		t.Fatalf("status not tinted:\n%q", out)
 	}
+	// Numbers are tinted by kind: neutral cyan, good green, caution
+	// yellow — and zeros are dimmed.
+	for _, want := range []string{
+		sumCyan + "106" + ansiReset, // listed / survived
+		sumGreen + "3" + ansiReset,  // matched objects
+		sumGreen + "12" + ansiReset, // matched lines
+		sumYellow + "2" + ansiReset, // partially scanned
+		sumDim + "0" + ansiReset,    // a zero count (stopped early / bytes)
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing tinted count %q:\n%q", want, out)
+		}
+	}
+
 	sb.Reset()
 	PrintSummary(&sb, res, false, false)
 	if strings.Contains(sb.String(), "\x1b[") {
 		t.Fatalf("uncolored summary has ANSI:\n%q", sb.String())
+	}
+	if !strings.Contains(sb.String(), "downloaded 0 B (0 compressed bytes)") {
+		t.Fatalf("bytes line not humanized:\n%q", sb.String())
 	}
 }

@@ -101,7 +101,7 @@ s3logscan: completed in 42.318s
   filtered out: 16 folder markers
   scanned to EOF 18195, stopped early by request 0, partially scanned 0
   matched objects 2, matched lines 2
-  compressed bytes downloaded 483920114
+  downloaded 461.5 MiB (483920114 compressed bytes)
 ```
 
 Exit code 0: matches found, nothing skipped or failed.
@@ -360,8 +360,11 @@ a terminal and honors the `NO_COLOR` convention and `TERM=dumb`;
 Piped or redirected output is byte-identical to the uncolored format
 above. Colors are applied after sanitization, so escape sequences
 inside scanned content can never masquerade as highlighting. When
-stderr is a terminal, the summary's status line, error counts, and
-discovered application IDs are tinted too.
+stderr is a terminal, the summary is tinted too: the status line
+green/yellow/red by outcome, and every count colored — neutral counts
+cyan, good outcomes (scanned to EOF, matches) green, cautionary ones
+(partial scans, filtered/oversized counts) yellow, errors red — with
+zero values dimmed so the numbers that actually moved stand out.
 
 Output is sanitized by default (`-sanitize-output=false` to disable):
 C0/C1 control characters, DEL, invalid UTF-8 bytes, and deceptive Unicode
