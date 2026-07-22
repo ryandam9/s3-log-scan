@@ -229,16 +229,17 @@ s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ -grep 'ERROR' -group
 
 ```
 s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/container_01_000001/stderr.gz
-     44: 26/07/20 09:14:02 ERROR Client: User class threw exception
-    812: org.apache.spark.sql.AnalysisException: Table or view not found
-  12581: 26/07/20 09:14:07 ERROR YarnScheduler: Lost executor 3
+      44: 26/07/20 09:14:02 ERROR Client: User class threw exception
+     812: org.apache.spark.sql.AnalysisException: Table or view not found
+   12581: 26/07/20 09:14:07 ERROR YarnScheduler: Lost executor 3
 
 s3://my-emr-logs/logs/j-1ABC/steps/s-2TAB55V93BXKQ/stderr.gz
-  12: ERROR: step failed
+      12: ERROR: step failed
 ```
 
-Line numbers are right-aligned within each block, so the matched text
-starts in one column no matter how deep into the file the matches sit.
+Line numbers print as a fixed 6-character right-aligned field (wider
+only for files beyond 999,999 lines), so the matched text starts in
+the same column within and across blocks.
 
 ZIP entries keep their name per line (`  inner.log:3: text`). Each
 object's block prints atomically when the object finishes, so blocks

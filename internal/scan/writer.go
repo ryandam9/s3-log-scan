@@ -215,43 +215,24 @@ func (w *Writer) flushGroup(key string) error {
 		}
 	}
 
-	// Right-align the entry:lineNo prefixes within the block so the
-	// text column lines up regardless of line-number width (1 vs
-	// 12345). Widths are computed on the sanitized strings — the
-	// bytes actually printed.
-	entries := make([]string, len(g.lines))
-	lineNos := make([]string, len(g.lines))
-	maxPrefix := 0
-	for i, r := range g.lines {
+	// Line numbers print as a fixed 6-character right-aligned field
+	// (wider only if a file exceeds 999,999 lines), so the matched
+	// text starts in the same column within and across blocks.
+	const lineNoWidth = 6
+	for _, r := range g.lines {
 		entry := r.ZipEntry
-		if w.sanitize {
-			entry = SanitizeString(entry)
-		}
-		entries[i] = entry
-		lineNos[i] = strconv.FormatInt(r.LineNo, 10)
-		width := len(lineNos[i])
-		if entry != "" {
-			width += len(entry) + 1
-		}
-		if width > maxPrefix {
-			maxPrefix = width
-		}
-	}
-
-	for i, r := range g.lines {
-		entry := entries[i]
-		lineNo := lineNos[i]
 		line := r.Line
 		if w.sanitize {
+			entry = SanitizeString(entry)
 			line = Sanitize(line)
 		}
-		width := len(lineNo)
-		if entry != "" {
-			width += len(entry) + 1
+		lineNo := strconv.FormatInt(r.LineNo, 10)
+		pad := lineNoWidth - len(lineNo)
+		if pad < 0 {
+			pad = 0
 		}
 		var sb strings.Builder
 		sb.WriteString("  ")
-		sb.WriteString(strings.Repeat(" ", maxPrefix-width))
 		if entry != "" {
 			if w.color {
 				sb.WriteString(ansiZip + entry + ansiReset + ansiSep + ":" + ansiReset)
@@ -259,6 +240,7 @@ func (w *Writer) flushGroup(key string) error {
 				sb.WriteString(entry + ":")
 			}
 		}
+		sb.WriteString(strings.Repeat(" ", pad))
 		if w.color {
 			sb.WriteString(ansiLineNo + lineNo + ansiReset + ansiSep + ":" + ansiReset + " ")
 		} else {
