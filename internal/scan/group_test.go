@@ -31,10 +31,45 @@ func TestGroupedBasic(t *testing.T) {
 		w.Emit(ctx, Result{Key: deep, GroupEnd: true})
 	})
 	want := "s3://b/" + deep + "\n" +
-		"  44: ERROR one\n" +
+		"   44: ERROR one\n" +
 		"  812: ERROR two\n"
 	if got != want {
 		t.Fatalf("grouped output:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// Line numbers are right-aligned within a block so the text column
+// lines up regardless of width (1 vs 12345).
+func TestGroupedLineNumberAlignment(t *testing.T) {
+	got := groupedWriterOutput(t, false, func(w *Writer) {
+		ctx := context.Background()
+		w.Emit(ctx, Result{Bucket: "b", Key: "k.log", LineNo: 1, Line: []byte("a")})
+		w.Emit(ctx, Result{Bucket: "b", Key: "k.log", LineNo: 1234, Line: []byte("b")})
+		w.Emit(ctx, Result{Bucket: "b", Key: "k.log", LineNo: 12345, Line: []byte("c")})
+		w.Emit(ctx, Result{Key: "k.log", GroupEnd: true})
+	})
+	want := "s3://b/k.log\n" +
+		"      1: a\n" +
+		"   1234: b\n" +
+		"  12345: c\n"
+	if got != want {
+		t.Fatalf("alignment:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// Mixed zip-entry and line-number widths align as one column.
+func TestGroupedZipAlignment(t *testing.T) {
+	got := groupedWriterOutput(t, false, func(w *Writer) {
+		ctx := context.Background()
+		w.Emit(ctx, Result{Bucket: "b", Key: "a.zip", ZipEntry: "long-entry.log", LineNo: 7, Line: []byte("x")})
+		w.Emit(ctx, Result{Bucket: "b", Key: "a.zip", ZipEntry: "e.log", LineNo: 12345, Line: []byte("y")})
+		w.Emit(ctx, Result{Key: "a.zip", GroupEnd: true})
+	})
+	want := "s3://b/a.zip\n" +
+		"  long-entry.log:7: x\n" +
+		"       e.log:12345: y\n"
+	if got != want {
+		t.Fatalf("zip alignment:\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -52,7 +87,7 @@ func TestGroupedInterleavedObjects(t *testing.T) {
 	})
 	want := "s3://b/y/two.log\n  5: m2\n" +
 		"\n" +
-		"s3://b/x/one.log\n  1: m1\n  9: m3\n  12: m4\n"
+		"s3://b/x/one.log\n   1: m1\n   9: m3\n  12: m4\n"
 	if got != want {
 		t.Fatalf("interleaved grouping:\n%q\nwant:\n%q", got, want)
 	}

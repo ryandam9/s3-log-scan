@@ -215,15 +215,43 @@ func (w *Writer) flushGroup(key string) error {
 		}
 	}
 
-	for _, r := range g.lines {
+	// Right-align the entry:lineNo prefixes within the block so the
+	// text column lines up regardless of line-number width (1 vs
+	// 12345). Widths are computed on the sanitized strings — the
+	// bytes actually printed.
+	entries := make([]string, len(g.lines))
+	lineNos := make([]string, len(g.lines))
+	maxPrefix := 0
+	for i, r := range g.lines {
 		entry := r.ZipEntry
-		line := r.Line
 		if w.sanitize {
 			entry = SanitizeString(entry)
+		}
+		entries[i] = entry
+		lineNos[i] = strconv.FormatInt(r.LineNo, 10)
+		width := len(lineNos[i])
+		if entry != "" {
+			width += len(entry) + 1
+		}
+		if width > maxPrefix {
+			maxPrefix = width
+		}
+	}
+
+	for i, r := range g.lines {
+		entry := entries[i]
+		lineNo := lineNos[i]
+		line := r.Line
+		if w.sanitize {
 			line = Sanitize(line)
+		}
+		width := len(lineNo)
+		if entry != "" {
+			width += len(entry) + 1
 		}
 		var sb strings.Builder
 		sb.WriteString("  ")
+		sb.WriteString(strings.Repeat(" ", maxPrefix-width))
 		if entry != "" {
 			if w.color {
 				sb.WriteString(ansiZip + entry + ansiReset + ansiSep + ":" + ansiReset)
@@ -231,7 +259,6 @@ func (w *Writer) flushGroup(key string) error {
 				sb.WriteString(entry + ":")
 			}
 		}
-		lineNo := strconv.FormatInt(r.LineNo, 10)
 		if w.color {
 			sb.WriteString(ansiLineNo + lineNo + ansiReset + ansiSep + ":" + ansiReset + " ")
 		} else {
