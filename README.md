@@ -83,6 +83,8 @@ s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/steps/
 -sanitize-output bool           default true
 -max-warnings N                 default 100
 -region string                  AWS region override
+-progress duration              status line to stderr every interval, e.g. 2s (0 = off)
+-verbose                        log listing pages and per-object scan starts (stderr)
 ```
 
 Regex patterns use Go RE2 semantics: no lookaround, no backreferences.
@@ -97,6 +99,28 @@ orders of magnitude — but listing time remains proportional to the number
 of keys under the prefix. Always scope the prefix to a cluster
 (`.../j-<CLUSTER>/`) where you can. Whole-bucket enumeration requires
 `-allow-whole-bucket-scan`.
+
+### Watching long runs
+
+A broad scan (especially `-allow-whole-bucket-scan`) can be quiet for a
+long time: S3 returns listing pages of ~1,000 keys sequentially while
+workers download and scan concurrently, and nothing prints until a
+match, a warning, or the final summary. Two flags make the wait
+legible, both writing to stderr so stdout stays pipeable:
+
+```
+s3logscan -bucket my-bucket -allow-whole-bucket-scan -grep kyneton -i -progress 2s
+```
+
+prints one status line per interval:
+
+```
+s3logscan: progress: 14s elapsed | listing, 42000 keys seen | 3100 survived filters | 2905 scanned, 195 in flight/queued | matched 3 objects / 17 lines | 1.2 GiB downloaded | 0 errors
+```
+
+`-verbose` additionally logs each listing page and each object as its
+scan starts — noisier, but shows exactly which key the tool is on.
+Progress and verbose lines never count against `-max-warnings`.
 
 ### Output
 

@@ -41,6 +41,13 @@ type Config struct {
 
 	SanitizeOutput bool
 	MaxWarnings    int
+
+	// Progress > 0 prints a one-line status to stderr every interval,
+	// so long scans are distinguishable from hangs. Verbose logs each
+	// listing page and each object as scanning starts. Both write to
+	// stderr only; stdout stays matches-only.
+	Progress time.Duration
+	Verbose  bool
 }
 
 // RunResult is what the engine hands back to main for exit-code and
@@ -64,6 +71,8 @@ type Engine struct {
 	counters Counters
 	appIDs   *AppIDSet
 	warner   *Warner
+
+	listingDone atomic.Bool
 }
 
 // NewEngine builds an engine around an S3 client. warnOut receives
@@ -126,9 +135,24 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 		}()
 	}
 
+	// The progress reporter runs until scanning completes, printing a
+	// status line every interval so the operator can see work moving.
+	progressDone := make(chan struct{})
+	var progressWG sync.WaitGroup
+	if e.cfg.Progress > 0 {
+		progressWG.Add(1)
+		go func() {
+			defer progressWG.Done()
+			e.reportProgress(start, progressDone)
+		}()
+	}
+
 	listErr = e.list(runCtx, work)
+	e.listingDone.Store(true)
 	close(work)
 	wg.Wait()
+	close(progressDone)
+	progressWG.Wait()
 	writeErr := writer.Close()
 
 	res := &RunResult{
@@ -223,11 +247,63 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 				return nil
 			}
 		}
+		if e.cfg.Verbose {
+			e.warner.Logf("listed page of %d keys (%d so far, %d survived filters)",
+				len(page.Contents), e.counters.Listed.Load(), e.counters.Survived.Load())
+		}
 	}
 	if window != nil {
 		window.Drain(send)
 	}
 	return nil
+}
+
+// reportProgress prints one status line per interval until scanning
+// finishes. Counters are atomic, so reading them here is race-free.
+func (e *Engine) reportProgress(start time.Time, done <-chan struct{}) {
+	ticker := time.NewTicker(e.cfg.Progress)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			e.warner.Logf("progress: %s", e.progressLine(time.Since(start)))
+		}
+	}
+}
+
+// progressLine renders the current state of the run in one line.
+func (e *Engine) progressLine(elapsed time.Duration) string {
+	c := &e.counters
+	listing := "listing"
+	if e.listingDone.Load() {
+		listing = "listing done"
+	}
+	completed := c.ScannedFully.Load() + c.StoppedEarly.Load() + c.ScannedPartially.Load() + c.ObjectErrors()
+	if e.cfg.ListOnly {
+		return fmt.Sprintf("%s elapsed | %s, %d keys seen | %d survived filters | %d reported",
+			elapsed.Round(time.Second), listing, c.Listed.Load(), c.Survived.Load(), c.MatchedObjects.Load())
+	}
+	return fmt.Sprintf("%s elapsed | %s, %d keys seen | %d survived filters | %d scanned, %d in flight/queued | matched %d objects / %d lines | %s downloaded | %d errors",
+		elapsed.Round(time.Second), listing, c.Listed.Load(), c.Survived.Load(),
+		completed, c.Survived.Load()-completed,
+		c.MatchedObjects.Load(), c.MatchedLines.Load(),
+		humanBytes(c.BytesDownloaded.Load()), c.ObjectErrors())
+}
+
+// humanBytes renders a byte count for progress lines.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // restoredCopyAvailable interprets the ListObjectsV2 RestoreStatus
@@ -251,6 +327,9 @@ func (e *Engine) worker(ctx context.Context, work <-chan ObjectDescriptor, zipSe
 
 func (e *Engine) scanOne(ctx context.Context, d ObjectDescriptor, zipSem chan struct{}, writer *Writer) {
 	format := DetectFormat(d.Key)
+	if e.cfg.Verbose {
+		e.warner.Logf("scanning s3://%s/%s (%s)", e.cfg.Bucket, SanitizeString(d.Key), humanBytes(d.Size))
+	}
 
 	// ZIP concurrency is gated independently of -workers (§6.3): each
 	// concurrent ZIP holds up to -max-size of temp disk.
