@@ -39,6 +39,6 @@ func (wr *Warner) Flush() {
 	wr.mu.Lock()
 	defer wr.mu.Unlock()
 	if n := wr.counters.WarningsSuppressed.Load(); n > 0 {
-		fmt.Fprintf(wr.w, "s3logscan: further warnings suppressed; %d additional object errors\n", n)
+		fmt.Fprintf(wr.w, "s3logscan: %d further warnings were suppressed by -max-warnings (all causes are still counted in the summary)\n", n)
 	}
 }

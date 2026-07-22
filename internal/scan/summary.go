@@ -7,8 +7,9 @@ import (
 )
 
 // PrintSummary writes the end-of-run account to w (stderr). It always
-// prints — including after SIGINT — and separates fully scanned,
-// partially scanned, skipped (with reasons), and failed objects (§10).
+// prints — including after SIGINT — and separates objects scanned to
+// EOF, stopped early by request, partially scanned, skipped (with
+// reasons), and failed (§10, M-06).
 func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
 	c := r.Counters
 	fmt.Fprintln(w, "---")
@@ -16,6 +17,8 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
 	switch {
 	case r.Interrupted:
 		status = "interrupted"
+	case r.TimedOut:
+		status = "stopped: -overall-timeout exceeded"
 	case r.WriteErr != nil:
 		status = fmt.Sprintf("stopped: stdout write failed (%v)", r.WriteErr)
 	case r.ListingErr != nil:
@@ -32,7 +35,7 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
 		}
 	}
 	appendSkip(c.FoldersSkipped.Load(), "folder markers")
-	appendSkip(c.ArchivedSkipped.Load(), "archived (Glacier/Deep Archive)")
+	appendSkip(c.ArchivedSkipped.Load(), "archived without restored copy")
 	appendSkip(c.OversizeSkipped.Load(), "over -max-size")
 	appendSkip(c.TimeFiltered.Load(), "outside time window")
 	appendSkip(c.ExtFiltered.Load(), "extension filtered")
@@ -44,7 +47,8 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
 	if listOnly {
 		fmt.Fprintf(w, "  list-only mode: %d objects reported, no downloads\n", c.MatchedObjects.Load())
 	} else {
-		fmt.Fprintf(w, "  scanned fully %d, partially %d\n", c.ScannedFully.Load(), c.ScannedPartially.Load())
+		fmt.Fprintf(w, "  scanned to EOF %d, stopped early by request %d, partially scanned %d\n",
+			c.ScannedFully.Load(), c.StoppedEarly.Load(), c.ScannedPartially.Load())
 		fmt.Fprintf(w, "  matched objects %d, matched lines %d\n", c.MatchedObjects.Load(), c.MatchedLines.Load())
 		fmt.Fprintf(w, "  compressed bytes downloaded %d\n", c.BytesDownloaded.Load())
 		if n := c.OversizedLines.Load(); n > 0 {
@@ -63,6 +67,8 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
 	appendErr(c.ChangedAfterListing.Load(), "changedAfterListing")
 	appendErr(c.Corrupt.Load(), "corrupt")
 	appendErr(c.Timeout.Load(), "timeout")
+	appendErr(c.ArchivedUnavailable.Load(), "archivedUnavailable")
+	appendErr(c.Throttled.Load(), "throttled")
 	appendErr(c.OtherErrors.Load(), "other")
 	if len(errs) > 0 {
 		fmt.Fprintf(w, "  object errors: %s\n", strings.Join(errs, ", "))
@@ -81,14 +87,20 @@ func PrintSummary(w io.Writer, r *RunResult, listOnly bool) {
 //	0    completed; ≥1 match; no object errors or partial scans
 //	1    completed; no matches
 //	2    fatal usage, configuration, credential, or listing error
-//	3    completed, but with ≥1 object error or partially scanned object
+//	3    completed with ≥1 object error or partially scanned object,
+//	     the overall timeout expired, or stdout failed mid-run
 //	130  interrupted (SIGINT/SIGTERM); summary is still printed
+//
+// -overall-timeout deliberately maps to 3, not 130: a configured
+// deadline is a partial run, not an external interruption (H-02).
 func ExitCode(r *RunResult) int {
 	switch {
 	case r.ListingErr != nil:
 		return 2
 	case r.Interrupted:
 		return 130
+	case r.TimedOut:
+		return 3
 	case r.WriteErr != nil:
 		return 3
 	case r.Counters.ObjectErrors() > 0 || r.Counters.ScannedPartially.Load() > 0:

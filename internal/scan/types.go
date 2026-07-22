@@ -17,6 +17,10 @@ type ObjectDescriptor struct {
 	LastModified time.Time
 	ETag         string
 	StorageClass string
+	// Restored reports that an archived object (Glacier/Deep Archive)
+	// currently has a readable restored copy, per the RestoreStatus
+	// attribute returned by ListObjectsV2.
+	Restored bool
 }
 
 // ErrorClass buckets per-object failures into the named counters
@@ -30,6 +34,8 @@ const (
 	ErrClassChangedAfterListing
 	ErrClassCorrupt
 	ErrClassTimeout
+	ErrClassArchived  // InvalidObjectState: archived and not restored
+	ErrClassThrottled // SlowDown and other rate-limit responses
 	ErrClassOther
 )
 
@@ -45,6 +51,10 @@ func (c ErrorClass) String() string {
 		return "corrupt"
 	case ErrClassTimeout:
 		return "timeout"
+	case ErrClassArchived:
+		return "archivedUnavailable"
+	case ErrClassThrottled:
+		return "throttled"
 	case ErrClassOther:
 		return "other"
 	}
@@ -64,7 +74,8 @@ type Counters struct {
 	ExtFiltered     atomic.Int64
 	KeyFiltered     atomic.Int64
 
-	ScannedFully     atomic.Int64
+	ScannedFully     atomic.Int64 // read to EOF
+	StoppedEarly     atomic.Int64 // terminated by request: -l or -max-matches
 	ScannedPartially atomic.Int64
 	MatchedObjects   atomic.Int64
 	MatchedLines     atomic.Int64
@@ -76,6 +87,8 @@ type Counters struct {
 	ChangedAfterListing atomic.Int64
 	Corrupt             atomic.Int64
 	Timeout             atomic.Int64
+	ArchivedUnavailable atomic.Int64
+	Throttled           atomic.Int64
 	OtherErrors         atomic.Int64
 
 	WarningsSuppressed atomic.Int64
@@ -94,6 +107,10 @@ func (c *Counters) AddError(class ErrorClass) {
 		c.Corrupt.Add(1)
 	case ErrClassTimeout:
 		c.Timeout.Add(1)
+	case ErrClassArchived:
+		c.ArchivedUnavailable.Add(1)
+	case ErrClassThrottled:
+		c.Throttled.Add(1)
 	case ErrClassOther:
 		c.OtherErrors.Add(1)
 	}
@@ -108,5 +125,7 @@ func (c *Counters) ObjectErrors() int64 {
 		c.ChangedAfterListing.Load() +
 		c.Corrupt.Load() +
 		c.Timeout.Load() +
+		c.ArchivedUnavailable.Load() +
+		c.Throttled.Load() +
 		c.OtherErrors.Load()
 }

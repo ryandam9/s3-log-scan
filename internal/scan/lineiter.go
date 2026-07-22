@@ -40,10 +40,13 @@ func (it *LineIterator) LineNo() int64 { return it.lineNo }
 func (it *LineIterator) Err() error { return it.err }
 
 // Next returns the next line with the trailing newline removed and
-// CRLF normalized. truncated reports that the line exceeded maxLineSize
-// and only its first maxLineSize bytes are returned; the remainder was
-// drained. ok=false means end of stream (check Err for failures).
-// The returned slice is only valid until the following Next call.
+// CRLF normalized. truncated reports that the line's content exceeded
+// maxLineSize and only its first maxLineSize bytes are returned; the
+// remainder was drained. Line-ending bytes never count against the
+// budget, so a newline-terminated line whose content is exactly
+// maxLineSize is not flagged. ok=false means end of stream (check Err
+// for failures). The returned slice is only valid until the following
+// Next call.
 func (it *LineIterator) Next() (line []byte, truncated, ok bool) {
 	if it.err != nil {
 		return nil, false, false
@@ -51,28 +54,33 @@ func (it *LineIterator) Next() (line []byte, truncated, ok bool) {
 	it.buf = it.buf[:0]
 	for {
 		chunk, err := it.r.ReadSlice('\n')
-		if len(chunk) > 0 {
+		content := chunk
+		if err == nil {
+			// The chunk completes the line: strip the EOL before
+			// budgeting so it never triggers truncation.
+			content = chunk[:len(chunk)-1]
+			switch {
+			case len(content) > 0 && content[len(content)-1] == '\r':
+				content = content[:len(content)-1]
+			case len(content) == 0 && !truncated && len(it.buf) > 0 && it.buf[len(it.buf)-1] == '\r':
+				// CRLF split across reads: the '\r' is already buffered.
+				it.buf = it.buf[:len(it.buf)-1]
+			}
+		}
+		if len(content) > 0 {
 			room := it.maxLineSize - len(it.buf)
-			if room > 0 {
-				if len(chunk) <= room {
-					it.buf = append(it.buf, chunk...)
-				} else {
-					it.buf = append(it.buf, chunk[:room]...)
-					truncated = true
-				}
-			} else {
+			switch {
+			case room >= len(content):
+				it.buf = append(it.buf, content...)
+			case room > 0:
+				it.buf = append(it.buf, content[:room]...)
+				truncated = true
+			default:
 				truncated = true
 			}
 		}
 		switch err {
 		case nil:
-			if it.buf[len(it.buf)-1] == '\n' {
-				// Complete line within the buffer window.
-				it.lineNo++
-				return trimEOL(it.buf), truncated, true
-			}
-			// Newline arrived but fell in the drained tail of an
-			// oversized line.
 			it.lineNo++
 			return it.buf, truncated, true
 		case bufio.ErrBufferFull:

@@ -57,12 +57,13 @@ type ScanOptions struct {
 
 // ObjectOutcome reports what scanning one object produced.
 type ObjectOutcome struct {
-	Matches    int64
-	Partial    bool       // truncated lines, budget aborts, mid-stream failures
-	Err        error      // non-nil only when nothing usable was scanned
-	ErrClass   ErrorClass // classification for Err or the partial cause
-	PartialWhy string
-	AppID      string // best discovered application ID, "" if none
+	Matches      int64
+	StoppedEarly bool       // terminated by request (-l, -max-matches), not by error
+	Partial      bool       // truncated lines, budget aborts, mid-stream failures
+	Err          error      // non-nil only when nothing usable was scanned
+	ErrClass     ErrorClass // classification for Err or the partial cause
+	PartialWhy   string
+	AppIDs       []string // every application ID attributed to a match
 }
 
 // objectScan holds the mutable state shared across all lines (and, for
@@ -74,20 +75,33 @@ type objectScan struct {
 	bucket  string
 	writer  *Writer
 	counter *Counters
-	tracker *AppIDTracker
 
 	matches    int64
 	sawMatch   bool
 	linesSeen  int64
-	oversized  int64
 	partial    bool
 	partialWhy string
 	streamErr  error
+	ctxErr     error // context expiry observed while scanning (H-01)
+
+	appIDs     map[string]struct{}
+	appIDOrder []string
 
 	// -l state machine: after the first match we either stop or, with
 	// -discover-apps and no ID yet, keep reading without printing
 	// until an ID appears or the object ends (§8).
 	silentIDHunt bool
+}
+
+func (s *objectScan) addAppID(id string) {
+	if id == "" {
+		return
+	}
+	if _, dup := s.appIDs[id]; dup {
+		return
+	}
+	s.appIDs[id] = struct{}{}
+	s.appIDOrder = append(s.appIDOrder, id)
 }
 
 // ScanObject scans one already-opened object body. The caller owns the
@@ -101,7 +115,7 @@ func ScanObject(ctx context.Context, bucket string, desc *ObjectDescriptor, body
 		bucket:  bucket,
 		writer:  writer,
 		counter: counters,
-		tracker: NewAppIDTracker(desc.Key),
+		appIDs:  make(map[string]struct{}),
 	}
 
 	var err error
@@ -117,22 +131,40 @@ func ScanObject(ctx context.Context, bucket string, desc *ObjectDescriptor, body
 	}
 
 	out := ObjectOutcome{
-		Matches:    s.matches,
-		Partial:    s.partial,
-		PartialWhy: s.partialWhy,
-		AppID:      s.tracker.Current(),
+		Matches:      s.matches,
+		StoppedEarly: s.done(),
+		Partial:      s.partial,
+		PartialWhy:   s.partialWhy,
+		AppIDs:       s.appIDOrder,
 	}
-	if err != nil && s.linesSeen == 0 && !s.partial {
+
+	// H-01: an object deadline observed mid-scan means unread data may
+	// remain — never a full scan. A plain cancellation is left to the
+	// engine, which knows whether the whole run is being torn down.
+	deadlineHit := errors.Is(s.ctxErr, context.DeadlineExceeded) && !out.StoppedEarly
+
+	switch {
+	case err != nil && s.linesSeen == 0 && !out.Partial:
 		// Nothing usable was scanned: a hard failure, not a partial.
 		out.Err = err
 		out.ErrClass = classifyContentError(ctx, err)
-	} else if err != nil {
+	case err != nil:
 		out.Partial = true
 		if out.PartialWhy == "" {
 			out.PartialWhy = err.Error()
 		}
 		out.ErrClass = classifyContentError(ctx, err)
-	} else if s.streamErr != nil {
+	case deadlineHit && s.linesSeen == 0 && !out.Partial:
+		out.Err = s.ctxErr
+		out.ErrClass = ErrClassTimeout
+	case deadlineHit:
+		out.Partial = true
+		if out.PartialWhy == "" {
+			out.PartialWhy = "object timeout before end of stream"
+		}
+		out.ErrClass = ErrClassTimeout
+	case s.streamErr != nil:
+		// scanLines already marked the object partial; classify it.
 		out.ErrClass = classifyContentError(ctx, s.streamErr)
 	}
 	return out
@@ -182,7 +214,7 @@ func (s *objectScan) scanZip(body io.Reader) error {
 	var expanded int64
 	for _, f := range zr.File {
 		if s.done() || s.ctx.Err() != nil {
-			return s.ctx.Err()
+			return nil // done()/ctxErr already capture why
 		}
 		if f.FileInfo().IsDir() {
 			continue
@@ -204,6 +236,10 @@ func (s *objectScan) scanZip(body io.Reader) error {
 }
 
 // expansionLimitedReader enforces the cumulative ZIP expansion budget.
+// Reads are capped at one byte past the remaining budget so that an
+// archive whose expanded size is exactly the limit reaches EOF without
+// a false positive, while overshoot beyond the limit is at most one
+// byte (M-01).
 type expansionLimitedReader struct {
 	r        io.Reader
 	total    *int64
@@ -212,9 +248,15 @@ type expansionLimitedReader struct {
 }
 
 func (e *expansionLimitedReader) Read(p []byte) (int, error) {
-	if e.limit > 0 && *e.total >= e.limit {
-		e.exceeded = true
-		return 0, errZipExpandBudget
+	if e.limit > 0 {
+		remaining := e.limit - *e.total
+		if remaining < 0 {
+			e.exceeded = true
+			return 0, errZipExpandBudget
+		}
+		if int64(len(p)) > remaining+1 {
+			p = p[:remaining+1]
+		}
 	}
 	n, err := e.r.Read(p)
 	*e.total += int64(n)
@@ -245,11 +287,17 @@ func (s *objectScan) markPartial(why string) {
 }
 
 // scanLines runs the line iterator over one decompressed stream and
-// applies matching, discovery, and termination rules.
+// applies matching, discovery, and termination rules. Each stream (the
+// object, or one ZIP entry) gets its own AppIDTracker seeded from the
+// object key, so preceding-context attribution never leaks across ZIP
+// entries (M-11).
 func (s *objectScan) scanLines(r io.Reader, zipEntry string) {
 	it := NewLineIterator(r, s.opts.MaxLineSize)
+	tracker := NewAppIDTracker(s.desc.Key)
 	for {
-		if s.ctx.Err() != nil {
+		// H-01: record context expiry instead of silently stopping.
+		if err := s.ctx.Err(); err != nil {
+			s.ctxErr = err
 			return
 		}
 		if s.done() {
@@ -261,20 +309,19 @@ func (s *objectScan) scanLines(r io.Reader, zipEntry string) {
 		}
 		s.linesSeen++
 		if truncated {
-			s.oversized++
 			s.counter.OversizedLines.Add(1)
 			// Conservative: truncation could have hidden a match in
 			// the drained tail (§6.4).
 			s.markPartial("oversized line truncated at -max-line-size")
 		}
-		// Discovery source 3: preceding context. Observing before the
-		// match decision also covers source 2, the matching line.
-		s.tracker.Observe(line)
+		// Discovery source 3: preceding context within this stream.
+		tracker.Observe(line)
 
 		if s.silentIDHunt {
 			// -l -discover-apps: match found, ID still missing — keep
 			// reading without printing until an ID appears or EOF.
-			if s.tracker.Current() != "" {
+			if id := tracker.Current(); id != "" {
+				s.addAppID(id)
 				s.silentIDHunt = false
 				return
 			}
@@ -284,31 +331,46 @@ func (s *objectScan) scanLines(r io.Reader, zipEntry string) {
 		if !s.opts.Grep.Match(line) {
 			continue
 		}
-		s.matches++
-		s.counter.MatchedLines.Add(1)
-		first := !s.sawMatch
-		s.sawMatch = true
+
+		// H-03: attribution is per match, resolved now — a later
+		// unrelated ID can never overwrite it, and one object can
+		// contribute several IDs.
+		ids := tracker.IDsForMatch(line)
+		for _, id := range ids {
+			s.addAppID(id)
+		}
 
 		if s.opts.NamesOnly {
-			if first {
-				s.writer.Emit(s.ctx, Result{Bucket: s.bucket, Key: s.desc.Key, KeyOnly: true})
-				if s.opts.DiscoverApps && s.tracker.Current() == "" {
-					s.silentIDHunt = true
-					continue
-				}
+			// M-12: count only after the writer accepted the result.
+			if !s.sawMatch && !s.writer.Emit(s.ctx, Result{Bucket: s.bucket, Key: s.desc.Key, KeyOnly: true}) {
+				s.ctxErr = s.ctx.Err()
+				return
+			}
+			s.sawMatch = true
+			s.matches++
+			s.counter.MatchedLines.Add(1)
+			if s.opts.DiscoverApps && len(s.appIDs) == 0 {
+				s.silentIDHunt = true
+				continue
 			}
 			return
 		}
 
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
-		s.writer.Emit(s.ctx, Result{
+		if !s.writer.Emit(s.ctx, Result{
 			Bucket:   s.bucket,
 			Key:      s.desc.Key,
 			ZipEntry: zipEntry,
 			LineNo:   it.LineNo(),
 			Line:     lineCopy,
-		})
+		}) {
+			s.ctxErr = s.ctx.Err()
+			return
+		}
+		s.sawMatch = true
+		s.matches++
+		s.counter.MatchedLines.Add(1)
 	}
 	if err := it.Err(); err != nil && !errors.Is(err, errZipExpandBudget) {
 		// Mid-stream failure: partially scanned, never retried — a

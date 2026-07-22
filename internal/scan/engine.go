@@ -50,11 +50,14 @@ type RunResult struct {
 	AppIDs      *AppIDSet
 	ListingErr  error // fatal: exit 2
 	WriteErr    error // stdout failed (EPIPE etc.)
-	Interrupted bool  // context cancelled from outside (signal)
+	TimedOut    bool  // -overall-timeout expired (exit 3, H-02)
+	Interrupted bool  // external cancellation: SIGINT/SIGTERM (exit 130)
 	Elapsed     time.Duration
 }
 
-// Engine wires lister → scheduler → workers → writer.
+// Engine wires lister → scheduler → workers → writer. An Engine is
+// single-use: counters and discovered IDs accumulate across its
+// lifetime, so build a fresh Engine per run.
 type Engine struct {
 	cfg      *Config
 	client   S3API
@@ -79,17 +82,19 @@ func NewEngine(cfg *Config, client S3API, warnOut io.Writer) *Engine {
 // suppression trailer).
 func (e *Engine) Warner() *Warner { return e.warner }
 
-// Run executes the scan. ctx should already carry signal cancellation;
-// the overall timeout is layered here.
-func (e *Engine) Run(ctx context.Context, stdout io.Writer) *RunResult {
+// Run executes the scan. externalCtx should carry signal cancellation
+// only; the overall timeout is layered here so the two are
+// distinguishable in the result (H-02).
+func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 	start := time.Now()
+	runCtx := externalCtx
 	if e.cfg.OverallTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, e.cfg.OverallTimeout)
+		runCtx, cancel = context.WithTimeout(runCtx, e.cfg.OverallTimeout)
 		defer cancel()
 	}
 	// The writer owns this cancel: any stdout failure stops the run.
-	ctx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(runCtx)
 	defer cancel()
 
 	writer := NewWriter(stdout, e.cfg.Workers*8, e.cfg.SanitizeOutput, cancel)
@@ -104,7 +109,7 @@ func (e *Engine) Run(ctx context.Context, stdout io.Writer) *RunResult {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				e.worker(ctx, work, zipSem, writer)
+				e.worker(runCtx, work, zipSem, writer)
 			}()
 		}
 	} else {
@@ -113,7 +118,7 @@ func (e *Engine) Run(ctx context.Context, stdout io.Writer) *RunResult {
 		go func() {
 			defer wg.Done()
 			for d := range work {
-				if !writer.Emit(ctx, Result{Bucket: e.cfg.Bucket, Key: d.Key, KeyOnly: true}) {
+				if !writer.Emit(runCtx, Result{Bucket: e.cfg.Bucket, Key: d.Key, KeyOnly: true}) {
 					return
 				}
 				e.counters.MatchedObjects.Add(1)
@@ -121,7 +126,7 @@ func (e *Engine) Run(ctx context.Context, stdout io.Writer) *RunResult {
 		}()
 	}
 
-	listErr = e.list(ctx, work)
+	listErr = e.list(runCtx, work)
 	close(work)
 	wg.Wait()
 	writeErr := writer.Close()
@@ -133,15 +138,23 @@ func (e *Engine) Run(ctx context.Context, stdout io.Writer) *RunResult {
 		WriteErr:   writeErr,
 		Elapsed:    time.Since(start),
 	}
-	if ctx.Err() != nil && writeErr == nil && listErr == nil {
+	// Classify why the run context ended, if it did (H-02): external
+	// signal, configured deadline, or writer-driven cancellation
+	// (already captured in WriteErr).
+	switch {
+	case writeErr != nil || listErr != nil:
+	case externalCtx.Err() != nil:
 		res.Interrupted = true
+	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
+		res.TimedOut = true
 	}
 	return res
 }
 
 // list paginates ListObjectsV2, applies the filter chain, and feeds
 // survivors to the work channel — directly, or through the bounded
-// smallest-first window (§5.2).
+// smallest-first window (§5.2). RestoreStatus is requested so archived
+// objects with a readable restored copy are scanned, not skipped (H-04).
 func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 	var window *SmallestFirstWindow
 	if e.cfg.SmallestFirst {
@@ -158,7 +171,8 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 	}
 
 	input := &s3.ListObjectsV2Input{
-		Bucket: aws.String(e.cfg.Bucket),
+		Bucket:                   aws.String(e.cfg.Bucket),
+		OptionalObjectAttributes: []types.OptionalObjectAttributes{types.OptionalObjectAttributesRestoreStatus},
 	}
 	if e.cfg.Prefix != "" {
 		input.Prefix = aws.String(e.cfg.Prefix)
@@ -190,6 +204,7 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 				LastModified: aws.ToTime(obj.LastModified),
 				ETag:         aws.ToString(obj.ETag),
 				StorageClass: string(obj.StorageClass),
+				Restored:     restoredCopyAvailable(obj.RestoreStatus),
 			}
 			if v := e.cfg.Filters.Apply(&d, &e.counters); v != VerdictAccept {
 				if v == VerdictOversize {
@@ -213,6 +228,13 @@ func (e *Engine) list(ctx context.Context, work chan<- ObjectDescriptor) error {
 		window.Drain(send)
 	}
 	return nil
+}
+
+// restoredCopyAvailable interprets the ListObjectsV2 RestoreStatus
+// attribute: a readable restored copy exists when a restore is not in
+// progress and an expiry date is present.
+func restoredCopyAvailable(rs *types.RestoreStatus) bool {
+	return rs != nil && !aws.ToBool(rs.IsRestoreInProgress) && rs.RestoreExpiryDate != nil
 }
 
 // worker consumes descriptors, GETs each with If-Match, scans, and
@@ -262,14 +284,16 @@ func (e *Engine) scanOne(ctx context.Context, d ObjectDescriptor, zipSem chan st
 
 	resp, err := e.client.GetObject(objCtx, input)
 	if err != nil {
-		class := classifyRequestError(objCtx, err)
-		if ctx.Err() != nil && objCtx.Err() == nil {
-			return // run-level cancellation, not an object failure
+		if runCancelled(ctx) {
+			return // run-level teardown, not an object failure
 		}
+		class := classifyRequestError(objCtx, err)
 		e.counters.AddError(class)
 		switch class {
 		case ErrClassChangedAfterListing:
 			e.warner.Warnf("s3://%s/%s: object changed after listing; not scanned", e.cfg.Bucket, d.Key)
+		case ErrClassArchived:
+			e.warner.Warnf("s3://%s/%s: archived and no restored copy is available; not scanned", e.cfg.Bucket, d.Key)
 		default:
 			e.warner.Warnf("s3://%s/%s: %s: %v", e.cfg.Bucket, d.Key, class, err)
 		}
@@ -282,14 +306,17 @@ func (e *Engine) scanOne(ctx context.Context, d ObjectDescriptor, zipSem chan st
 
 	if outcome.Matches > 0 {
 		e.counters.MatchedObjects.Add(1)
-		e.appIDs.Add(outcome.AppID)
+		e.appIDs.AddAll(outcome.AppIDs)
 	}
 	switch {
 	case outcome.Err != nil:
+		if runCancelled(ctx) {
+			return
+		}
 		e.counters.AddError(outcome.ErrClass)
 		e.warner.Warnf("s3://%s/%s: %s: %v", e.cfg.Bucket, d.Key, outcome.ErrClass, outcome.Err)
 	case outcome.Partial:
-		if ctx.Err() != nil {
+		if runCancelled(ctx) {
 			return // interrupted mid-scan; the run reports interruption
 		}
 		e.counters.ScannedPartially.Add(1)
@@ -297,12 +324,25 @@ func (e *Engine) scanOne(ctx context.Context, d ObjectDescriptor, zipSem chan st
 			e.counters.AddError(outcome.ErrClass)
 		}
 		e.warner.Warnf("s3://%s/%s: partially scanned: %s", e.cfg.Bucket, d.Key, outcome.PartialWhy)
+	case outcome.StoppedEarly:
+		// -l or -max-matches terminated the object by request: the
+		// query was satisfied, but the object was not read to EOF
+		// (M-06).
+		e.counters.StoppedEarly.Add(1)
 	default:
-		if ctx.Err() != nil {
+		if runCancelled(ctx) {
 			return
 		}
 		e.counters.ScannedFully.Add(1)
 	}
+}
+
+// runCancelled reports a plain cancellation of the run context (signal,
+// writer failure). A deadline on the run context (-overall-timeout) is
+// NOT a plain cancellation: objects cut off by it are still accounted
+// as partial so the summary never under-reports.
+func runCancelled(ctx context.Context) bool {
+	return errors.Is(ctx.Err(), context.Canceled)
 }
 
 // countingReader tallies compressed bytes read from S3.
@@ -317,7 +357,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// classifyRequestError buckets GetObject failures (§10, H-05).
+// classifyRequestError buckets GetObject failures (§10, H-05, M-10).
 func classifyRequestError(ctx context.Context, err error) ErrorClass {
 	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
 		return ErrClassTimeout
@@ -329,6 +369,13 @@ func classifyRequestError(ctx context.Context, err error) ErrorClass {
 			return ErrClassChangedAfterListing
 		case code == "NoSuchKey" || code == "NotFound":
 			return ErrClassNotFound
+		case code == "InvalidObjectState":
+			// Archived (or Intelligent-Tiering archive tier) with no
+			// readable copy.
+			return ErrClassArchived
+		case code == "SlowDown" || code == "Throttling" || code == "ThrottlingException" ||
+			code == "RequestLimitExceeded" || code == "TooManyRequestsException":
+			return ErrClassThrottled
 		case code == "AccessDenied" || strings.HasPrefix(code, "KMS."):
 			// KMS denials count with access denials (§10).
 			return ErrClassAccessDenied

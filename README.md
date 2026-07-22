@@ -108,12 +108,16 @@ s3://bucket/key:lineNo: text
 s3://bucket/key!zipEntry:lineNo: text
 ```
 
-Control characters (other than tab) in content, keys, and ZIP entry names
-are replaced with `?` by default (`-sanitize-output=false` to disable).
-Diagnostics go to stderr, capped by `-max-warnings`. A summary is always
-printed to stderr — including after interruption — separating fully
-scanned, partially scanned, skipped (with reasons), and failed objects,
-plus per-class error counts and discovered application IDs.
+Output is sanitized by default (`-sanitize-output=false` to disable):
+C0/C1 control characters, DEL, invalid UTF-8 bytes, and deceptive Unicode
+formatting (bidirectional overrides and isolates, zero-width characters,
+line/paragraph separators, BOM) in content, keys, and ZIP entry names are
+each replaced with `?` — tab is kept. Diagnostics go to stderr, capped by
+`-max-warnings`. A summary is always printed to stderr — including after
+interruption — separating objects scanned to EOF, stopped early by
+request (`-l`, `-max-matches`), partially scanned, skipped (with
+reasons), and failed, plus per-class error counts and discovered
+application IDs.
 
 ### Exit codes
 
@@ -121,10 +125,16 @@ plus per-class error counts and discovered application IDs.
 0    completed; one or more matches; no object errors or partial scans
 1    completed; no matches
 2    fatal usage, configuration, credential, or listing error
-3    completed, but with >=1 object error or partially scanned object
-     (also used when stdout fails mid-run, e.g. a closed pipe)
+3    completed, but with >=1 object error or partially scanned object;
+     also used when -overall-timeout expires or stdout fails mid-run
 130  interrupted (SIGINT/SIGTERM); summary is still printed
 ```
+
+`-h`/`-help` and `-version` exit 0. `-overall-timeout` deliberately maps
+to 3, not 130: a configured deadline is a partial run, not an external
+interruption, and automation can tell the two apart. An object cut off
+by `-object-timeout` is counted as partially scanned with a `timeout`
+error — never as fully scanned.
 
 A *partially scanned* object means content may have been missed: an
 oversized line was truncated, a ZIP budget aborted processing, or a stream
@@ -179,9 +189,17 @@ KMS denials are reported under the `accessDenied` error class.
 - `-expected-bucket-owner <account-id>` guards against cross-account
   bucket confusion.
 - `-request-payer requester` supports requester-pays buckets.
-- Glacier and Deep Archive objects are skipped at listing time and
-  counted (`archivedSkipped`); Glacier Instant Retrieval objects are
-  scanned normally.
+- Archive handling is restore-aware: listing requests the
+  `RestoreStatus` attribute, so a Glacier/Deep Archive object with a
+  readable restored copy **is scanned**; unrestored (or
+  restore-in-progress) objects are skipped at listing time and counted
+  (`archivedSkipped`). Glacier Instant Retrieval objects are scanned
+  normally. Objects in the Intelligent-Tiering archive tiers keep a
+  readable-looking storage class; their `InvalidObjectState` GET
+  failures are classified as `archivedUnavailable`.
+- Error classes in the summary: `accessDenied` (including KMS),
+  `notFound`, `changedAfterListing`, `corrupt`, `timeout`,
+  `archivedUnavailable`, `throttled` (SlowDown et al.), `other`.
 
 ## Behavior guarantees
 
@@ -198,16 +216,35 @@ KMS denials are reported under the `accessDenied` error class.
   cancels promptly and reports interruption instead of a misleading
   success summary.
 
+## Application-ID attribution
+
+Attribution is per match, not per object: at each matching line the ID
+is resolved from (in priority order) the object key, the matching line
+itself, or the most recent preceding ID in the same stream. One object
+can therefore contribute several application IDs, and an unrelated ID
+appearing after a match is never attributed to it. Each ZIP entry gets
+its own context, so IDs cannot leak between entries (the outer key's ID,
+when present, applies to all entries). With `-l -discover-apps`, reading
+continues silently after the first match until an ID appears or the
+object ends.
+
 ## Development
 
 ```
-go build ./...
-go vet ./...
+make            # fmt + vet + race tests + build + install
 go test -race ./...
 ```
 
-The test suite covers every filter boundary, oversized-line and
-truncated-stream behavior, ZIP budgets, gzip multistream, application-ID
-discovery from key/line/context, pagination boundaries, LIST/GET races
-(`If-Match`), error classification, warning suppression, cancellation, and
-broken-pipe handling — against a stub S3, with the race detector clean.
+CI (GitHub Actions) runs gofmt, `go mod tidy` drift check, `go vet`,
+the race-enabled test suite, a build, and `govulncheck` on every push
+and pull request.
+
+The test suite covers every filter boundary, oversized-line and exact
+line-limit behavior, truncated streams, ZIP budgets (including the
+exact-expansion boundary), gzip multistream, per-match application-ID
+attribution and ZIP-entry isolation, object/overall timeout accounting,
+restore-aware archive filtering, pagination boundaries, LIST/GET races
+(`If-Match`), error classification, warning suppression, cancellation,
+and broken-pipe handling — against a stub S3, with the race detector
+clean, plus fuzz targets for the line iterator, sanitizer, and ID
+extraction.

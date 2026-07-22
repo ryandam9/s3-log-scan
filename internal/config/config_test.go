@@ -45,6 +45,12 @@ func TestValidationFailFast(t *testing.T) {
 		{"after not before before", []string{"-bucket", "b", "-prefix", "p", "-after", "2026-07-02", "-before", "2026-07-01"}, "must be earlier"},
 		{"bad request payer", []string{"-bucket", "b", "-prefix", "p", "-request-payer", "owner"}, "-request-payer"},
 		{"line size zero", []string{"-bucket", "b", "-prefix", "p", "-max-line-size", "0"}, "-max-line-size"},
+		// M-03: absurd values are rejected before MiB conversion can
+		// overflow and silently disable a budget.
+		{"max-size overflow", []string{"-bucket", "b", "-prefix", "p", "-max-size", "9223372036854775807"}, "-max-size"},
+		{"max-size above cap", []string{"-bucket", "b", "-prefix", "p", "-max-size", "1048577"}, "-max-size"},
+		{"uncompressed above cap", []string{"-bucket", "b", "-prefix", "p", "-max-uncompressed-object-size", "4194305"}, "-max-uncompressed-object-size"},
+		{"line size above cap", []string{"-bucket", "b", "-prefix", "p", "-max-line-size", "257"}, "-max-line-size"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

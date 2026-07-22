@@ -15,6 +15,16 @@ import (
 
 const mib = 1 << 20
 
+// Upper bounds on size flags (in MiB), chosen far above any realistic
+// need but low enough that MiB→byte conversion can never overflow
+// int64 (or int on 64-bit platforms) and silently disable a budget
+// (M-03).
+const (
+	maxSizeCapMiB         = 1 << 20 // 1 TiB
+	maxUncompressedCapMiB = 4 << 20 // 4 TiB
+	maxLineSizeCapMiB     = 256
+)
+
 // Options is the parsed, not-yet-validated command line.
 type Options struct {
 	Bucket               string
@@ -108,8 +118,14 @@ func (o *Options) Build() (*scan.Config, error) {
 	if o.MaxSizeMiB < 0 || o.MaxUncompressedMiB < 0 || o.MaxMatches < 0 || o.MaxWarnings < 0 {
 		return nil, fmt.Errorf("size, match, and warning limits must be >= 0")
 	}
-	if o.MaxLineSizeMiB < 1 {
-		return nil, fmt.Errorf("-max-line-size must be >= 1 MiB, got %d", o.MaxLineSizeMiB)
+	if o.MaxSizeMiB > maxSizeCapMiB {
+		return nil, fmt.Errorf("-max-size must be <= %d MiB (1 TiB), got %d", int64(maxSizeCapMiB), o.MaxSizeMiB)
+	}
+	if o.MaxUncompressedMiB > maxUncompressedCapMiB {
+		return nil, fmt.Errorf("-max-uncompressed-object-size must be <= %d MiB (4 TiB), got %d", int64(maxUncompressedCapMiB), o.MaxUncompressedMiB)
+	}
+	if o.MaxLineSizeMiB < 1 || o.MaxLineSizeMiB > maxLineSizeCapMiB {
+		return nil, fmt.Errorf("-max-line-size must be in 1-%d MiB, got %d", maxLineSizeCapMiB, o.MaxLineSizeMiB)
 	}
 	if o.MaxZipEntries < 1 {
 		return nil, fmt.Errorf("-max-zip-entries must be >= 1, got %d", o.MaxZipEntries)

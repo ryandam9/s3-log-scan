@@ -254,8 +254,8 @@ func TestNamesOnlyFirstHit(t *testing.T) {
 	if r.outcome.Matches != 1 {
 		t.Fatalf("first-hit exit: %d matches", r.outcome.Matches)
 	}
-	if r.outcome.AppID != "application_1700000000000_0007" {
-		t.Fatalf("app ID from key: %q", r.outcome.AppID)
+	if len(r.outcome.AppIDs) != 1 || r.outcome.AppIDs[0] != "application_1700000000000_0007" {
+		t.Fatalf("app ID from key: %v", r.outcome.AppIDs)
 	}
 }
 
@@ -269,8 +269,8 @@ func TestNamesOnlyStepLogBestEffort(t *testing.T) {
 	if r.outcome.Matches != 1 || r.outcome.Err != nil {
 		t.Fatalf("scan failed: %+v", r.outcome)
 	}
-	if r.outcome.AppID != "" {
-		t.Fatalf("without -discover-apps the later ID must not be read: %q", r.outcome.AppID)
+	if len(r.outcome.AppIDs) != 0 {
+		t.Fatalf("without -discover-apps the later ID must not be read: %v", r.outcome.AppIDs)
 	}
 }
 
@@ -282,8 +282,8 @@ func TestNamesOnlyDiscoverApps(t *testing.T) {
 	opts.NamesOnly = true
 	opts.DiscoverApps = true
 	r := runObjectScan(t, stepKey, gzipBytes(t, content), opts)
-	if r.outcome.AppID != "application_1700000000000_0099" {
-		t.Fatalf("discover-apps must find the ID after the match: %q", r.outcome.AppID)
+	if len(r.outcome.AppIDs) != 1 || r.outcome.AppIDs[0] != "application_1700000000000_0099" {
+		t.Fatalf("discover-apps must find the ID after the match: %v", r.outcome.AppIDs)
 	}
 	if strings.Count(r.output, "\n") != 1 {
 		t.Fatalf("only the key must be printed:\n%q", r.output)
@@ -297,8 +297,8 @@ func TestDiscoverAppsPrecedingContext(t *testing.T) {
 	opts.NamesOnly = true
 	opts.DiscoverApps = true
 	r := runObjectScan(t, stepKey, gzipBytes(t, content), opts)
-	if r.outcome.AppID != "application_1700000000000_0050" {
-		t.Fatalf("preceding-context ID: %q", r.outcome.AppID)
+	if len(r.outcome.AppIDs) != 1 || r.outcome.AppIDs[0] != "application_1700000000000_0050" {
+		t.Fatalf("preceding-context ID: %v", r.outcome.AppIDs)
 	}
 }
 
@@ -308,8 +308,8 @@ func TestDiscoverAppsNoIDToEOF(t *testing.T) {
 	opts.NamesOnly = true
 	opts.DiscoverApps = true
 	r := runObjectScan(t, stepKey, gzipBytes(t, "ERROR at start\nno ids anywhere\n"), opts)
-	if r.outcome.AppID != "" {
-		t.Fatalf("expected no ID, got %q", r.outcome.AppID)
+	if len(r.outcome.AppIDs) != 0 {
+		t.Fatalf("expected no ID, got %v", r.outcome.AppIDs)
 	}
 	if r.outcome.Matches != 1 {
 		t.Fatalf("matches: %d", r.outcome.Matches)

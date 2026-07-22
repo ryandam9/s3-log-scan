@@ -6,8 +6,12 @@ import (
 	"sync"
 )
 
-// appIDPattern matches YARN application IDs wherever they appear.
-var appIDPattern = regexp.MustCompile(`application_\d+_\d+`)
+// appIDPattern matches YARN application IDs. The leading \b prevents
+// matches inside longer identifiers (e.g. "myapplication_1_2"); no
+// trailing boundary is imposed because aggregated-log names legitimately
+// append suffixes ("application_1_2_1.log") and the greedy \d+ already
+// consumes every trailing digit.
+var appIDPattern = regexp.MustCompile(`\bapplication_\d+_\d+`)
 
 // ExtractAppID returns the first application ID in b, or "".
 func ExtractAppID(b []byte) string {
@@ -19,26 +23,44 @@ func ExtractAppIDString(s string) string {
 	return appIDPattern.FindString(s)
 }
 
-// AppIDTracker implements the three-source discovery model (§8, C-01):
+// ExtractAllAppIDs returns every application ID in b, in order,
+// without deduplication.
+func ExtractAllAppIDs(b []byte) []string {
+	found := appIDPattern.FindAll(b, -1)
+	if len(found) == 0 {
+		return nil
+	}
+	out := make([]string, len(found))
+	for i, f := range found {
+		out[i] = string(f)
+	}
+	return out
+}
+
+// AppIDTracker implements the discovery sources of §8 for one stream:
 // the object key, the matching line itself, and preceding context (the
-// most recent ID seen anywhere earlier in the object). Per-line ID
-// scanning is enabled only when the key lacks an ID, so container-log
-// scans pay nothing for it.
+// most recent ID seen earlier in the same stream). Attribution is
+// match-oriented: IDsForMatch resolves the IDs for one matching line at
+// the moment it matches, so an unrelated ID appearing later can never
+// overwrite it. For ZIPs, one tracker is created per entry (seeded only
+// with the outer key ID) so context cannot leak across entries.
+//
+// Per-line ID scanning is enabled only when the key lacks an ID, so
+// container-log scans pay nothing for it.
 type AppIDTracker struct {
 	keyID    string
 	lastSeen string
 	scanLine bool
 }
 
-// NewAppIDTracker prepares a tracker for one object.
+// NewAppIDTracker prepares a tracker for one object or ZIP entry.
 func NewAppIDTracker(key string) *AppIDTracker {
 	keyID := ExtractAppIDString(key)
 	return &AppIDTracker{keyID: keyID, scanLine: keyID == ""}
 }
 
-// Observe must be called for every line read from the object (before
-// deciding whether it matches). It is a no-op when the key already
-// carries an ID.
+// Observe must be called for every line read (before deciding whether
+// it matches). It is a no-op when the key already carries an ID.
 func (t *AppIDTracker) Observe(line []byte) {
 	if !t.scanLine {
 		return
@@ -48,8 +70,27 @@ func (t *AppIDTracker) Observe(line []byte) {
 	}
 }
 
-// Current returns the best ID known so far, in priority order:
-// key, then most recent line/context sighting.
+// IDsForMatch resolves the application IDs to attribute to one
+// matching line, in the design's priority order: the key ID if the key
+// carries one; otherwise every ID on the matching line itself;
+// otherwise the most recent preceding ID. Returns nil when no source
+// yields an ID.
+func (t *AppIDTracker) IDsForMatch(line []byte) []string {
+	if t.keyID != "" {
+		return []string{t.keyID}
+	}
+	if ids := ExtractAllAppIDs(line); len(ids) > 0 {
+		return ids
+	}
+	if t.lastSeen != "" {
+		return []string{t.lastSeen}
+	}
+	return nil
+}
+
+// Current returns the best ID known so far (key, then most recent
+// sighting). Used by the -l -discover-apps read-on rule, where a
+// following ID is explicitly wanted.
 func (t *AppIDTracker) Current() string {
 	if t.keyID != "" {
 		return t.keyID
@@ -77,6 +118,13 @@ func (s *AppIDSet) Add(id string) {
 	s.mu.Lock()
 	s.ids[id] = struct{}{}
 	s.mu.Unlock()
+}
+
+// AddAll records every ID in ids.
+func (s *AppIDSet) AddAll(ids []string) {
+	for _, id := range ids {
+		s.Add(id)
+	}
 }
 
 // Sorted returns the collected IDs in lexical order.

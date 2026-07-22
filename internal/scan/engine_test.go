@@ -21,13 +21,39 @@ import (
 
 // fakeObject is one object in the stub S3.
 type fakeObject struct {
-	body         []byte
-	lastModified time.Time
-	storageClass string
-	etag         string
-	getErr       error  // forced GetObject failure
-	liveETag     string // if set and != etag, GET returns 412
+	body          []byte
+	lastModified  time.Time
+	storageClass  string
+	restoreStatus *types.RestoreStatus
+	etag          string
+	getErr        error         // forced GetObject failure
+	liveETag      string        // if set and != etag, GET returns 412
+	readDelay     time.Duration // per-Read delay on the response body
 }
+
+// slowReadCloser dribbles data out with a delay per read, so timeouts
+// can expire mid-scan deterministically.
+type slowReadCloser struct {
+	data  []byte
+	pos   int
+	delay time.Duration
+}
+
+func (s *slowReadCloser) Read(p []byte) (int, error) {
+	if s.pos >= len(s.data) {
+		return 0, io.EOF
+	}
+	time.Sleep(s.delay)
+	end := s.pos + 64
+	if end > len(s.data) {
+		end = len(s.data)
+	}
+	n := copy(p, s.data[s.pos:end])
+	s.pos += n
+	return n, nil
+}
+
+func (s *slowReadCloser) Close() error { return nil }
 
 // fakeS3 implements S3API with configurable pagination.
 type fakeS3 struct {
@@ -91,6 +117,7 @@ func (f *fakeS3) ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Input, _
 		if o.storageClass != "" {
 			obj.StorageClass = types.ObjectStorageClass(o.storageClass)
 		}
+		obj.RestoreStatus = o.restoreStatus
 		out.Contents = append(out.Contents, obj)
 	}
 	return out, nil
@@ -109,6 +136,9 @@ func (f *fakeS3) GetObject(ctx context.Context, in *s3.GetObjectInput, _ ...func
 	}
 	if o.liveETag != "" && o.liveETag != aws.ToString(in.IfMatch) {
 		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "at least one of the pre-conditions you specified did not hold"}
+	}
+	if o.readDelay > 0 {
+		return &s3.GetObjectOutput{Body: &slowReadCloser{data: o.body, delay: o.readDelay}}, nil
 	}
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(o.body))}, nil
 }
@@ -396,7 +426,7 @@ func TestEngineWarningCap(t *testing.T) {
 	if got := strings.Count(stderr, "warning:"); got != 3 {
 		t.Fatalf("warnings emitted: %d want 3\n%s", got, stderr)
 	}
-	if !strings.Contains(stderr, "further warnings suppressed; 7 additional") {
+	if !strings.Contains(stderr, "7 further warnings were suppressed") {
 		t.Fatalf("suppression trailer missing:\n%s", stderr)
 	}
 	if res.Counters.AccessDenied.Load() != 10 {
