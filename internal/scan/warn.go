@@ -22,6 +22,16 @@ func NewWarner(w io.Writer, max int, counters *Counters) *Warner {
 	return &Warner{w: w, max: int64(max), counters: counters}
 }
 
+// Logf emits one informational line (progress, verbose events). It
+// shares the mutex with Warnf so lines never interleave, but does not
+// count against -max-warnings: suppression exists to bound error
+// noise, not requested status output.
+func (wr *Warner) Logf(format string, args ...interface{}) {
+	wr.mu.Lock()
+	defer wr.mu.Unlock()
+	fmt.Fprintf(wr.w, "s3logscan: "+format+"\n", args...)
+}
+
 // Warnf emits one warning, subject to the cap.
 func (wr *Warner) Warnf(format string, args ...interface{}) {
 	wr.mu.Lock()

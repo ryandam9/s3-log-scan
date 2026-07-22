@@ -53,6 +53,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	cfg.Scan.TempDir = os.TempDir()
+	cfg.ColorOutput = resolveColor(opts.Color, stdout)
 
 	// Prompt reaction to SIGINT/SIGTERM: cancel everything, still
 	// print the summary, exit 130 (§10). Only signal cancellation
@@ -80,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			awsCfg.Region = region
 		}
 	}
-	client := s3.NewFromConfig(awsCfg)
+	client := newS3Client(awsCfg)
 
 	engine := scan.NewEngine(cfg, client, stderr)
 	result := engine.Run(ctx, stdout)
@@ -89,8 +90,42 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if result.ListingErr != nil {
 		fmt.Fprintf(stderr, "s3logscan: %v\n", result.ListingErr)
 	}
-	scan.PrintSummary(stderr, result, cfg.ListOnly)
+	scan.PrintSummary(stderr, result, cfg.ListOnly, resolveColor(opts.Color, stderr))
 	return scan.ExitCode(result)
+}
+
+// resolveColor decides whether a stream gets ANSI colors. "always"
+// and "never" are absolute; "auto" colors only when the stream is a
+// terminal, honoring the NO_COLOR convention and TERM=dumb.
+func resolveColor(mode string, w io.Writer) bool {
+	switch mode {
+	case "always":
+		return true
+	case "never":
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// newS3Client builds the S3 client with response-checksum validation
+// set to WhenRequired. The SDK's default (WhenSupported) logs a
+// "Response has no supported checksum" WARN line for every GetObject
+// of an object uploaded without a modern checksum — one useless stderr
+// line per object on older buckets. Integrity is still covered by TLS,
+// the gzip/ZIP CRCs of compressed content, and the If-Match ETag
+// condition on every GET.
+func newS3Client(cfg aws.Config) *s3.Client {
+	return s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+	})
 }
 
 // resolveBucketRegion discovers which region a bucket lives in.
@@ -103,7 +138,7 @@ func resolveBucketRegion(ctx context.Context, cfg aws.Config, bucket string) (st
 	if probe.Region == "" {
 		probe.Region = "us-east-1"
 	}
-	client := s3.NewFromConfig(probe)
+	client := newS3Client(probe)
 	out, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
 	if err == nil {
 		if out.BucketRegion != nil && *out.BucketRegion != "" {

@@ -14,6 +14,7 @@ type Matcher struct {
 	fixed      []byte // non-nil in case-sensitive fixed-string mode
 	fixedFold  []byte // non-nil in case-insensitive fixed-string mode
 	re         *regexp.Regexp
+	spanRe     *regexp.Regexp // used only for highlight spans in fold mode
 	expression string
 }
 
@@ -26,6 +27,10 @@ func NewMatcher(pattern string, fixedString, ignoreCase bool) (*Matcher, error) 
 		m.fixed = []byte(pattern)
 	case fixedString && ignoreCase:
 		m.fixedFold = bytes.ToLower([]byte(pattern))
+		// Byte offsets into the original line can't be derived from a
+		// lowercased copy (case folding can change byte lengths), so
+		// highlight spans use an equivalent literal regexp.
+		m.spanRe = regexp.MustCompile("(?i)" + regexp.QuoteMeta(pattern))
 	default:
 		expr := pattern
 		if ignoreCase {
@@ -55,4 +60,35 @@ func (m *Matcher) Match(b []byte) bool {
 // MatchString reports whether s contains the pattern.
 func (m *Matcher) MatchString(s string) bool {
 	return m.Match([]byte(s))
+}
+
+// Spans returns the [start, end) byte offsets of every non-overlapping
+// occurrence of the pattern in b, for match highlighting.
+func (m *Matcher) Spans(b []byte) [][2]int {
+	var spans [][2]int
+	switch {
+	case m.fixed != nil:
+		for off := 0; ; {
+			i := bytes.Index(b[off:], m.fixed)
+			if i < 0 {
+				break
+			}
+			start := off + i
+			end := start + len(m.fixed)
+			spans = append(spans, [2]int{start, end})
+			off = end
+			if len(m.fixed) == 0 {
+				break
+			}
+		}
+	case m.fixedFold != nil:
+		for _, loc := range m.spanRe.FindAllIndex(b, -1) {
+			spans = append(spans, [2]int{loc[0], loc[1]})
+		}
+	default:
+		for _, loc := range m.re.FindAllIndex(b, -1) {
+			spans = append(spans, [2]int{loc[0], loc[1]})
+		}
+	}
+	return spans
 }

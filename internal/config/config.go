@@ -58,6 +58,9 @@ type Options struct {
 	SanitizeOutput      bool
 	MaxWarnings         int
 	Region              string
+	Progress            time.Duration
+	Verbose             bool
+	Color               string
 }
 
 // NewFlagSet binds all flags (§11) onto a fresh FlagSet.
@@ -94,6 +97,9 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.BoolVar(&o.SanitizeOutput, "sanitize-output", true, "replace control characters in output")
 	fs.IntVar(&o.MaxWarnings, "max-warnings", 100, "stderr warning cap (0 = unlimited)")
 	fs.StringVar(&o.Region, "region", "", "AWS region override")
+	fs.DurationVar(&o.Progress, "progress", 0, "print a status line to stderr every interval, e.g. 2s (0 = off)")
+	fs.BoolVar(&o.Verbose, "verbose", false, "log each listing page and each object as scanning starts (stderr)")
+	fs.StringVar(&o.Color, "color", "auto", `colorize results: "auto" (only when stdout is a terminal), "always", or "never"`)
 	return fs, o
 }
 
@@ -139,6 +145,15 @@ func (o *Options) Build() (*scan.Config, error) {
 	if o.ObjectTimeout < 0 || o.OverallTimeout < 0 {
 		return nil, fmt.Errorf("timeouts must be >= 0")
 	}
+	if o.Progress < 0 {
+		return nil, fmt.Errorf("-progress must be >= 0")
+	}
+	if o.Progress > 0 && o.Progress < 100*time.Millisecond {
+		return nil, fmt.Errorf("-progress interval must be at least 100ms, got %s", o.Progress)
+	}
+	if o.Color != "auto" && o.Color != "always" && o.Color != "never" {
+		return nil, fmt.Errorf(`-color must be "auto", "always", or "never", got %q`, o.Color)
+	}
 
 	cfg := &scan.Config{
 		Bucket:              o.Bucket,
@@ -154,6 +169,8 @@ func (o *Options) Build() (*scan.Config, error) {
 		ExpectedBucketOwner: o.ExpectedBucketOwner,
 		SanitizeOutput:      o.SanitizeOutput,
 		MaxWarnings:         o.MaxWarnings,
+		Progress:            o.Progress,
+		Verbose:             o.Verbose,
 	}
 
 	cfg.Filters.MaxSize = o.MaxSizeMiB * mib
