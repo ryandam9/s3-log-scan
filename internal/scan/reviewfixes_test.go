@@ -51,7 +51,7 @@ func TestObjectTimeoutBeforeFirstLine(t *testing.T) {
 	var out bytes.Buffer
 	_, wcancel := context.WithCancel(context.Background())
 	defer wcancel()
-	w := NewWriter(&out, 8, true, false, nil, wcancel)
+	w := NewWriter(&out, WriterConfig{QueueDepth: 8, Sanitize: true}, wcancel)
 	var c Counters
 	desc := &ObjectDescriptor{Key: "l.log"}
 	outcome := ScanObject(ctx, "b", desc, strings.NewReader("ERROR x\n"), FormatPlain, &opts, w, &c)
@@ -78,7 +78,7 @@ func TestObjectTimeoutMidScanMarkedPartial(t *testing.T) {
 	opts.TempDir = t.TempDir()
 	var out bytes.Buffer
 	_, wcancel := context.WithCancel(context.Background())
-	w := NewWriter(&out, 8, true, false, nil, wcancel)
+	w := NewWriter(&out, WriterConfig{QueueDepth: 8, Sanitize: true}, wcancel)
 	var c Counters
 	desc := &ObjectDescriptor{Key: "l.log"}
 	outcome := ScanObject(ctx, "b", desc, slow, FormatPlain, &opts, w, &c)
@@ -402,7 +402,7 @@ func TestEmitFailureStopsCounting(t *testing.T) {
 	defer cancel()
 	// The underlying writer fails on the first flush (~64 KiB of
 	// output), which cancels ctx.
-	w := NewWriter(&failAfterWriter{limit: 0}, 4, true, false, nil, cancel)
+	w := NewWriter(&failAfterWriter{limit: 0}, WriterConfig{QueueDepth: 4, Sanitize: true}, cancel)
 
 	opts := grepOpts(t, "ERROR")
 	opts.MaxLineSize = 1 << 20

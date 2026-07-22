@@ -5,13 +5,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 )
 
-// Result is one unit of output: either a matched line or a bare object
-// key (names-only and list-only modes).
+// Result is one unit of output: a matched line, a bare object key
+// (names-only and list-only modes), or a group-end marker (grouped
+// mode: the object finished, flush its block).
 type Result struct {
 	Bucket   string
 	Key      string
@@ -19,6 +21,26 @@ type Result struct {
 	LineNo   int64  // 0 for key-only results
 	Line     []byte // nil for key-only results
 	KeyOnly  bool
+	GroupEnd bool // grouped mode: no more results for Key
+}
+
+// WriterConfig bundles the writer's rendering options.
+type WriterConfig struct {
+	QueueDepth int
+	Sanitize   bool
+	Color      bool
+	Group      bool     // print each object key once as a heading
+	Grep       *Matcher // for highlight spans; nil = no highlighting
+}
+
+// groupFlushBytes caps how much of one object's output is buffered in
+// grouped mode before a segment is flushed early (repeating the
+// heading). Bounds writer memory at roughly workers × this value.
+const groupFlushBytes = 1 << 20
+
+type groupBuf struct {
+	lines []Result
+	bytes int
 }
 
 // Writer is the sole owner of stdout (§7.1, H-02). Workers send
@@ -27,13 +49,22 @@ type Result struct {
 // "| head", a closed redirect — the writer cancels the shared context,
 // keeps draining its channel so no worker blocks, and records the
 // failure so the run reports interruption instead of success.
+//
+// In grouped mode each object's matches are buffered and printed as
+// one block when the object finishes, so a deep key prints once as a
+// heading instead of repeating on every line. Blocks from concurrent
+// workers never interleave.
 type Writer struct {
 	ch       chan Result
 	out      *bufio.Writer
 	cancel   context.CancelFunc
 	sanitize bool
 	color    bool
-	grep     *Matcher // for highlight spans; nil in list-only mode
+	group    bool
+	grep     *Matcher
+
+	groups       map[string]*groupBuf
+	groupPrinted bool // a group heading has been printed (separator state)
 
 	done     chan struct{}
 	mu       sync.Mutex
@@ -41,19 +72,18 @@ type Writer struct {
 }
 
 // NewWriter starts the writer goroutine. cancel is invoked on the
-// first write failure. Queue depth bounds queued output (§9). With
-// color enabled, keys, line numbers, and separators are tinted and
-// grep matches within the line are highlighted (grep is nil when
-// there is no content pattern). Color is applied after sanitization,
-// so scanned content can never inject sequences that look like ours.
-func NewWriter(out io.Writer, queueDepth int, sanitize, color bool, grep *Matcher, cancel context.CancelFunc) *Writer {
+// first write failure. Color is applied after sanitization, so scanned
+// content can never inject sequences that look like ours.
+func NewWriter(out io.Writer, cfg WriterConfig, cancel context.CancelFunc) *Writer {
 	w := &Writer{
-		ch:       make(chan Result, queueDepth),
+		ch:       make(chan Result, cfg.QueueDepth),
 		out:      bufio.NewWriterSize(out, 64*1024),
 		cancel:   cancel,
-		sanitize: sanitize,
-		color:    color,
-		grep:     grep,
+		sanitize: cfg.Sanitize,
+		color:    cfg.Color,
+		group:    cfg.Group,
+		grep:     cfg.Grep,
+		groups:   make(map[string]*groupBuf),
 		done:     make(chan struct{}),
 	}
 	go w.run()
@@ -114,9 +144,114 @@ func (w *Writer) run() {
 			}
 		}
 	}
+	// Grouped mode: an interrupted worker may never send its
+	// group-end marker; flush whatever was buffered so found matches
+	// are never lost (deterministic order for the leftovers).
+	if !failed && w.group {
+		keys := make([]string, 0, len(w.groups))
+		for k := range w.groups {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if err := w.flushGroup(k); err != nil {
+				fail(err)
+				return
+			}
+		}
+	}
 }
 
 func (w *Writer) write(r Result) error {
+	if w.group && !r.KeyOnly {
+		if r.GroupEnd {
+			return w.flushGroup(r.Key)
+		}
+		g := w.groups[r.Key]
+		if g == nil {
+			g = &groupBuf{}
+			w.groups[r.Key] = g
+		}
+		g.lines = append(g.lines, r)
+		g.bytes += len(r.Line) + len(r.ZipEntry) + 32
+		if g.bytes >= groupFlushBytes {
+			// Segment flush: bound memory; the heading repeats for
+			// the remainder of this object.
+			return w.flushGroup(r.Key)
+		}
+		return nil
+	}
+	return w.writeSingle(r)
+}
+
+// flushGroup prints one object's buffered matches as a block: the key
+// once as a heading, then each match indented, blocks separated by a
+// blank line.
+func (w *Writer) flushGroup(key string) error {
+	g := w.groups[key]
+	delete(w.groups, key)
+	if g == nil || len(g.lines) == 0 {
+		return nil
+	}
+	if w.groupPrinted {
+		if err := w.out.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	w.groupPrinted = true
+
+	heading := key
+	if w.sanitize {
+		heading = SanitizeString(heading)
+	}
+	bucket := g.lines[0].Bucket
+	if w.color {
+		if _, err := fmt.Fprintf(w.out, "%ss3://%s/%s%s\n", ansiKey, bucket, heading, ansiReset); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(w.out, "s3://%s/%s\n", bucket, heading); err != nil {
+			return err
+		}
+	}
+
+	for _, r := range g.lines {
+		entry := r.ZipEntry
+		line := r.Line
+		if w.sanitize {
+			entry = SanitizeString(entry)
+			line = Sanitize(line)
+		}
+		var sb strings.Builder
+		sb.WriteString("  ")
+		if entry != "" {
+			if w.color {
+				sb.WriteString(ansiZip + entry + ansiReset + ansiSep + ":" + ansiReset)
+			} else {
+				sb.WriteString(entry + ":")
+			}
+		}
+		lineNo := strconv.FormatInt(r.LineNo, 10)
+		if w.color {
+			sb.WriteString(ansiLineNo + lineNo + ansiReset + ansiSep + ":" + ansiReset + " ")
+		} else {
+			sb.WriteString(lineNo + ": ")
+		}
+		if _, err := w.out.WriteString(sb.String()); err != nil {
+			return err
+		}
+		if err := w.writeLine(line); err != nil {
+			return err
+		}
+		if err := w.out.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeSingle renders the classic one-line-per-match format.
+func (w *Writer) writeSingle(r Result) error {
 	key := r.Key
 	entry := r.ZipEntry
 	line := r.Line
@@ -161,17 +296,17 @@ func (w *Writer) write(r Result) error {
 	if _, err := w.out.WriteString(sb.String()); err != nil {
 		return err
 	}
-	if err := w.writeHighlighted(line); err != nil {
+	if err := w.writeLine(line); err != nil {
 		return err
 	}
 	return w.out.WriteByte('\n')
 }
 
-// writeHighlighted prints line with every pattern occurrence wrapped
-// in the match color. Spans are computed on the sanitized text — the
-// bytes actually printed.
-func (w *Writer) writeHighlighted(line []byte) error {
-	if w.grep == nil {
+// writeLine prints line, highlighting every pattern occurrence when
+// color is on. Spans are computed on the sanitized text — the bytes
+// actually printed.
+func (w *Writer) writeLine(line []byte) error {
+	if !w.color || w.grep == nil {
 		_, err := w.out.Write(line)
 		return err
 	}

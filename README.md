@@ -67,6 +67,7 @@ reporting, and scripting with exit codes.
 -progress duration              status line to stderr every interval, e.g. 2s (0 = off)
 -verbose                        log listing pages and per-object scan starts (stderr)
 -color auto|always|never        colorize results (default auto: only on a terminal)
+-group                          print each object key once as a heading, matches indented
 ```
 
 Regex patterns use Go RE2 semantics: no lookaround, no backreferences.
@@ -214,6 +215,35 @@ Exit code 0 — a satisfied query, not an interruption. With `-l`, the
 cap counts reported object names instead of lines. This is the "show
 me a few examples and stop spending money" lever: combine with
 `-smallest-first` to sample matches from many small objects cheaply.
+
+#### Group matches under each object
+
+When keys are deep (`a/b/c/d/e/.../app.log`), repeating the full path
+on every matching line drowns the content. `-group` prints each
+object's key once as a heading with its matches indented below,
+ripgrep-style:
+
+```
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ -grep 'ERROR' -group
+```
+
+```
+s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/container_01_000001/stderr.gz
+  44: 26/07/20 09:14:02 ERROR Client: User class threw exception
+  812: org.apache.spark.sql.AnalysisException: Table or view not found
+
+s3://my-emr-logs/logs/j-1ABC/steps/s-2TAB55V93BXKQ/stderr.gz
+  12: ERROR: step failed
+```
+
+ZIP entries keep their name per line (`  inner.log:3: text`). Each
+object's block prints atomically when the object finishes, so blocks
+from concurrent workers never interleave — the trade-off is that a
+huge object's matches appear when it completes rather than line by
+line (memory stays bounded: at most ~1 MiB is buffered per in-flight
+object, after which a segment flushes early and the heading repeats).
+`-group` requires `-grep` and doesn't combine with `-l`, whose output
+is already one key per line.
 
 #### Watch a long scan
 

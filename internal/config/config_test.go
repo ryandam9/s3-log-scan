@@ -51,6 +51,8 @@ func TestValidationFailFast(t *testing.T) {
 		{"max-size above cap", []string{"-bucket", "b", "-prefix", "p", "-max-size", "1048577"}, "-max-size"},
 		{"uncompressed above cap", []string{"-bucket", "b", "-prefix", "p", "-max-uncompressed-object-size", "4194305"}, "-max-uncompressed-object-size"},
 		{"line size above cap", []string{"-bucket", "b", "-prefix", "p", "-max-line-size", "257"}, "-max-line-size"},
+		{"group without grep", []string{"-bucket", "b", "-prefix", "p", "-group"}, "-group requires -grep"},
+		{"group with names-only", []string{"-bucket", "b", "-prefix", "p", "-grep", "x", "-l", "-group"}, "-group cannot be combined with -l"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -32,7 +32,7 @@ func colorWriterOutput(t *testing.T, grep *Matcher, r Result) string {
 	var out bytes.Buffer
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := NewWriter(&out, 8, true, true, grep, cancel)
+	w := NewWriter(&out, WriterConfig{QueueDepth: 8, Sanitize: true, Color: true, Grep: grep}, cancel)
 	w.Emit(context.Background(), r)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)

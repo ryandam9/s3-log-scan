@@ -41,6 +41,7 @@ type Config struct {
 
 	SanitizeOutput bool
 	ColorOutput    bool // ANSI-color stdout results (resolved by main from -color + TTY)
+	GroupOutput    bool // -group: print each object key once as a heading
 	MaxWarnings    int
 
 	// MaxTotalMatches stops the whole run after this many matches
@@ -116,7 +117,13 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 	// The run-wide match cap must be wired before any worker starts.
 	e.cfg.Scan.limiter = newMatchLimiter(e.cfg.MaxTotalMatches)
 
-	writer := NewWriter(stdout, e.cfg.Workers*8, e.cfg.SanitizeOutput, e.cfg.ColorOutput, e.cfg.Scan.Grep, cancel)
+	writer := NewWriter(stdout, WriterConfig{
+		QueueDepth: e.cfg.Workers * 8,
+		Sanitize:   e.cfg.SanitizeOutput,
+		Color:      e.cfg.ColorOutput,
+		Group:      e.cfg.GroupOutput,
+		Grep:       e.cfg.Scan.Grep,
+	}, cancel)
 
 	work := make(chan ObjectDescriptor, e.cfg.Workers*2)
 	var listErr error
@@ -441,6 +448,12 @@ func (e *Engine) scanOne(ctx context.Context, d ObjectDescriptor, zipSem chan st
 
 	body := &countingReader{r: resp.Body, n: &e.counters.BytesDownloaded}
 	outcome := ScanObject(objCtx, e.cfg.Bucket, &d, body, format, &e.cfg.Scan, writer, &e.counters)
+
+	if e.cfg.GroupOutput {
+		// Tell the writer this object's block is complete so it can
+		// print the group atomically. Best-effort under cancellation.
+		writer.Emit(ctx, Result{Key: d.Key, GroupEnd: true})
+	}
 
 	if outcome.Matches > 0 {
 		e.counters.MatchedObjects.Add(1)
