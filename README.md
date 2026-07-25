@@ -36,8 +36,11 @@ reporting, and scripting with exit codes.
 ### Flags
 
 ```
--bucket string                  required
--prefix string                  required unless -allow-whole-bucket-scan
+-bucket string                  required unless a cluster flag derives it
+-prefix string                  required unless -allow-whole-bucket-scan or a cluster flag
+-cluster-name string            EMR cluster name; resolves the RUNNING/WAITING cluster,
+                                reads its S3 log destination, scopes the scan to it
+-cluster-id string              EMR cluster ID (j-...); same scoping, any cluster state
 -allow-whole-bucket-scan        explicit opt-in to empty-prefix enumeration
 -key pattern                    object-key filter (client-side; cuts GETs, not LIST work)
 -grep pattern                   content filter; omit for list-only mode (no downloads)
@@ -148,6 +151,37 @@ and the summary turns the discovery into your next query:
   application IDs discovered (1):
     application_1700000000000_0042
 ```
+
+#### Scan an EMR cluster by name — no bucket or prefix needed
+
+```
+s3logscan -cluster-name hbase-prod -key application_1700000000000_0042 -grep 'ERROR'
+```
+
+`-cluster-name` asks EMR for the RUNNING/WAITING cluster with that
+name, reads its "Log destination in Amazon S3" (`LogUri`) from
+`DescribeCluster`, and scopes the whole scan to
+`s3://<log-bucket>/<log-prefix>/<cluster-id>/` — no `-bucket` or
+`-prefix` required. The chosen scope is echoed to stderr:
+
+```
+s3logscan: scanning s3://my-emr-logs/logs/j-1ABC2DEF3GHI4/
+```
+
+Details:
+
+- If several active clusters share the name, the newest is used and
+  the others are listed on stderr with their IDs so you can target one
+  precisely with `-cluster-id`.
+- `-cluster-id j-XXX` does the same scoping for any cluster state —
+  terminated clusters' logs remain in S3 and their `LogUri` is still
+  describable.
+- Explicit `-bucket`/`-prefix` override the derived destination (the
+  cluster ID is still appended), for logs replicated elsewhere.
+- Requires `elasticmapreduce:ListClusters` (name resolution) and
+  `elasticmapreduce:DescribeCluster` (log destination) IAM permissions.
+  The EMR API is regional: the cluster is looked up in your profile's
+  region, while the log bucket's own region is still auto-detected.
 
 #### List objects without downloading anything
 

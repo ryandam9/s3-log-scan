@@ -53,6 +53,8 @@ func TestValidationFailFast(t *testing.T) {
 		{"line size above cap", []string{"-bucket", "b", "-prefix", "p", "-max-line-size", "257"}, "-max-line-size"},
 		{"group without grep", []string{"-bucket", "b", "-prefix", "p", "-group"}, "-group requires -grep"},
 		{"group with names-only", []string{"-bucket", "b", "-prefix", "p", "-grep", "x", "-l", "-group"}, "-group cannot be combined with -l"},
+		{"both cluster flags", []string{"-cluster-name", "hbase", "-cluster-id", "j-1A"}, "mutually exclusive"},
+		{"bad cluster id", []string{"-cluster-id", "1ABC"}, "-cluster-id must look like"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -79,6 +81,17 @@ func TestValidConfigs(t *testing.T) {
 	}
 	if err := build(t, "-bucket", "b", "-prefix", "p", "-grep", "x", "-l", "-discover-apps"); err != nil {
 		t.Fatalf("-l -discover-apps: %v", err)
+	}
+	// Cluster flags waive -bucket and the whole-bucket prefix guard:
+	// the scan is scoped to the cluster's log destination.
+	if err := build(t, "-cluster-name", "hbase-prod", "-grep", "x"); err != nil {
+		t.Fatalf("cluster-name without bucket/prefix: %v", err)
+	}
+	if err := build(t, "-cluster-id", "j-1ABC2DEF", "-grep", "x"); err != nil {
+		t.Fatalf("cluster-id without bucket/prefix: %v", err)
+	}
+	if err := build(t, "-bucket", "b", "-prefix", "logs/", "-cluster-name", "hbase-prod", "-grep", "x"); err != nil {
+		t.Fatalf("cluster-name with explicit bucket/prefix: %v", err)
 	}
 }
 
