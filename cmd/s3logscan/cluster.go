@@ -12,10 +12,11 @@ import (
 	emrtypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
 )
 
-// emrLister is the slice of the EMR client used for cluster-name
-// resolution; the fake in tests implements the same interface.
-type emrLister interface {
+// emrAPI is the slice of the EMR client used for cluster resolution;
+// the fake in tests implements the same interface.
+type emrAPI interface {
 	ListClusters(ctx context.Context, in *emr.ListClustersInput, optFns ...func(*emr.Options)) (*emr.ListClustersOutput, error)
+	DescribeCluster(ctx context.Context, in *emr.DescribeClusterInput, optFns ...func(*emr.Options)) (*emr.DescribeClusterOutput, error)
 }
 
 // clusterMatch is one EMR cluster whose name matched -cluster-name.
@@ -39,7 +40,7 @@ func (m clusterMatch) String() string {
 // still be scanned by passing their ID with -cluster-id. When several
 // active clusters share the name, the most recently created one is
 // chosen and the others are returned so the caller can say so.
-func resolveClusterID(ctx context.Context, client emrLister, name string) (chosen clusterMatch, others []clusterMatch, err error) {
+func resolveClusterID(ctx context.Context, client emrAPI, name string) (chosen clusterMatch, others []clusterMatch, err error) {
 	var matches []clusterMatch
 	input := &emr.ListClustersInput{
 		ClusterStates: []emrtypes.ClusterState{
@@ -89,4 +90,47 @@ func joinClusterPrefix(prefix, clusterID string) string {
 		prefix += "/"
 	}
 	return prefix + clusterID + "/"
+}
+
+// clusterLogDestination reads the cluster's "Log destination in
+// Amazon S3" (LogUri) via DescribeCluster, so -bucket/-prefix need not
+// be passed at all. Works for terminated clusters too.
+func clusterLogDestination(ctx context.Context, client emrAPI, clusterID string) (bucket, prefix string, err error) {
+	out, err := client.DescribeCluster(ctx, &emr.DescribeClusterInput{ClusterId: aws.String(clusterID)})
+	if err != nil {
+		return "", "", fmt.Errorf("describing EMR cluster %s: %w", clusterID, err)
+	}
+	logURI := ""
+	if out.Cluster != nil {
+		logURI = aws.ToString(out.Cluster.LogUri)
+	}
+	if logURI == "" {
+		return "", "", fmt.Errorf("EMR cluster %s has no S3 log destination configured; pass -bucket and -prefix explicitly", clusterID)
+	}
+	bucket, prefix, err = parseS3URI(logURI)
+	if err != nil {
+		return "", "", fmt.Errorf("EMR cluster %s log destination: %w", clusterID, err)
+	}
+	return bucket, prefix, nil
+}
+
+// parseS3URI splits s3://bucket/prefix (also the legacy s3n:// and
+// s3a:// schemes EMR log URIs sometimes carry) into bucket and prefix.
+func parseS3URI(uri string) (bucket, prefix string, err error) {
+	rest := ""
+	switch {
+	case strings.HasPrefix(uri, "s3://"):
+		rest = uri[len("s3://"):]
+	case strings.HasPrefix(uri, "s3n://"):
+		rest = uri[len("s3n://"):]
+	case strings.HasPrefix(uri, "s3a://"):
+		rest = uri[len("s3a://"):]
+	default:
+		return "", "", fmt.Errorf("unsupported S3 URI %q (expected s3://bucket/prefix)", uri)
+	}
+	bucket, prefix, _ = strings.Cut(rest, "/")
+	if bucket == "" {
+		return "", "", fmt.Errorf("no bucket in S3 URI %q", uri)
+	}
+	return bucket, prefix, nil
 }

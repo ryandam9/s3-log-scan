@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/ryandam9/s3-log-scan/internal/config"
@@ -71,13 +72,49 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "s3logscan: loading AWS configuration: %v\n", err)
 		return 2
 	}
+	// Cluster scoping: resolve -cluster-name to the active cluster's
+	// ID, derive the bucket/prefix from the cluster's S3 log
+	// destination when they were not given, and pin the prefix to
+	// .../<cluster-id>/ so listing covers only that cluster.
+	if opts.ClusterName != "" || opts.ClusterID != "" {
+		emrClient := emr.NewFromConfig(awsCfg)
+		clusterID := opts.ClusterID
+		if opts.ClusterName != "" {
+			chosen, others, err := resolveClusterID(ctx, emrClient, opts.ClusterName)
+			if err != nil {
+				fmt.Fprintf(stderr, "s3logscan: %v\n", err)
+				return 2
+			}
+			clusterID = chosen.ID
+			if len(others) > 0 {
+				fmt.Fprintf(stderr, "s3logscan: %d running/waiting clusters named %q; using the newest, %s\n",
+					len(others)+1, opts.ClusterName, chosen)
+				for _, m := range others {
+					fmt.Fprintf(stderr, "s3logscan:   also matched: %s (target it with -cluster-id)\n", m)
+				}
+			}
+		}
+		bucket, prefix := opts.Bucket, opts.Prefix
+		if bucket == "" {
+			var err error
+			bucket, prefix, err = clusterLogDestination(ctx, emrClient, clusterID)
+			if err != nil {
+				fmt.Fprintf(stderr, "s3logscan: %v\n", err)
+				return 2
+			}
+		}
+		cfg.Bucket = bucket
+		cfg.Prefix = joinClusterPrefix(prefix, clusterID)
+		fmt.Fprintf(stderr, "s3logscan: scanning s3://%s/%s\n", cfg.Bucket, cfg.Prefix)
+	}
+
 	// Unless -region was given explicitly, resolve the bucket's actual
 	// region so cross-region buckets work without configuration
 	// (IllegalLocationConstraintException / PermanentRedirect
 	// otherwise). Detection failures fall back to the configured
 	// region and let the real operation report its error.
 	if opts.Region == "" {
-		if region, ok := resolveBucketRegion(ctx, awsCfg, opts.Bucket); ok {
+		if region, ok := resolveBucketRegion(ctx, awsCfg, cfg.Bucket); ok {
 			awsCfg.Region = region
 		}
 	}

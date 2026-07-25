@@ -73,8 +73,10 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.SetOutput(out)
 	o := &Options{}
 
-	fs.StringVar(&o.Bucket, "bucket", "", "S3 bucket name (required)")
-	fs.StringVar(&o.Prefix, "prefix", "", "key prefix; required unless -allow-whole-bucket-scan")
+	fs.StringVar(&o.Bucket, "bucket", "", "S3 bucket name (required unless -cluster-name/-cluster-id derive it)")
+	fs.StringVar(&o.Prefix, "prefix", "", "key prefix; required unless -allow-whole-bucket-scan or a cluster flag")
+	fs.StringVar(&o.ClusterName, "cluster-name", "", "EMR cluster name; resolves the RUNNING/WAITING cluster and scopes the scan to its S3 log destination")
+	fs.StringVar(&o.ClusterID, "cluster-id", "", "EMR cluster ID (j-...); scopes the scan to its S3 log destination (works for terminated clusters)")
 	fs.BoolVar(&o.AllowWholeBucketScan, "allow-whole-bucket-scan", false, "explicit opt-in to empty-prefix enumeration of the whole bucket")
 	fs.StringVar(&o.KeyPattern, "key", "", "object-key filter (client-side; cuts GETs, not LIST work)")
 	fs.StringVar(&o.GrepPattern, "grep", "", "content filter; omit for list-only mode (no downloads)")
@@ -112,10 +114,19 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 // Build validates o and produces the engine configuration. All
 // violations are usage errors (exit 2).
 func (o *Options) Build() (*scan.Config, error) {
-	if o.Bucket == "" {
-		return nil, fmt.Errorf("-bucket is required")
+	if o.ClusterName != "" && o.ClusterID != "" {
+		return nil, fmt.Errorf("-cluster-name and -cluster-id are mutually exclusive")
 	}
-	if o.Prefix == "" && !o.AllowWholeBucketScan {
+	if o.ClusterID != "" && !strings.HasPrefix(o.ClusterID, "j-") {
+		return nil, fmt.Errorf("-cluster-id must look like j-XXXXXXXXXXXXX, got %q", o.ClusterID)
+	}
+	cluster := o.ClusterName != "" || o.ClusterID != ""
+	if o.Bucket == "" && !cluster {
+		return nil, fmt.Errorf("-bucket is required (or pass -cluster-name/-cluster-id to derive it from the cluster's S3 log destination)")
+	}
+	// A cluster flag always narrows the prefix to .../<cluster-id>/,
+	// so the whole-bucket guard does not apply.
+	if o.Prefix == "" && !o.AllowWholeBucketScan && !cluster {
 		return nil, fmt.Errorf("-prefix is required; pass -allow-whole-bucket-scan to enumerate the whole bucket (listing time is proportional to key count)")
 	}
 	if o.Workers < 1 || o.Workers > 256 {
