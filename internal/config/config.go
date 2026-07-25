@@ -65,6 +65,7 @@ type Options struct {
 	Verbose             bool
 	Color               string
 	Group               bool
+	ConfigFile          string
 }
 
 // usageExamples is appended to the -h/-help output so the common
@@ -96,6 +97,16 @@ Examples:
 
   Only objects modified on one UTC day (-after inclusive, -before exclusive):
     s3logscan -bucket b -prefix logs/ -after 2026-07-20 -before 2026-07-21 -grep ERROR
+
+Config file:
+  Standing defaults are read from ~/.config/s3logscan/config (override
+  the path with -config FILE). One "flag = value" per line, # comments
+  allowed; any flag given on the command line takes priority. Example:
+      cluster-name = hbase-prod
+      grep = ERROR
+      i = true
+      progress = 2s
+  With that in place, a scan is just:  s3logscan -key application_..._0042
 
 Exit codes:
   0 matched; 1 no matches; 2 usage/credential/listing failure;
@@ -150,7 +161,8 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.DurationVar(&o.Progress, "progress", 0, "print a status line to stderr every interval, e.g. 2s (0 = off)")
 	fs.BoolVar(&o.Verbose, "verbose", false, "log each listing page and each object as scanning starts (stderr)")
 	fs.StringVar(&o.Color, "color", "auto", `colorize results: "auto" (only when stdout is a terminal), "always", or "never"`)
-	fs.BoolVar(&o.Group, "group", false, "print each object key once as a heading with its matches indented below")
+	fs.BoolVar(&o.Group, "group", false, "print each object key once as a heading with its matches indented below (default: on when stdout is a terminal; -group=false forces flat lines)")
+	fs.StringVar(&o.ConfigFile, "config", "", "config file with 'flag = value' defaults (default: ~/.config/s3logscan/config if present); command-line flags take priority")
 	return fs, o
 }
 

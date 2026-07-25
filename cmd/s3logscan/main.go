@@ -48,6 +48,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "s3logscan %s (commit %s, built %s)\n", version, commit, date)
 		return 0
 	}
+	// Config file: standing defaults (cluster name, pattern, -i, ...)
+	// read from -config or ~/.config/s3logscan/config, applied only to
+	// flags NOT given on the command line — CLI always takes priority.
+	cliSet := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { cliSet[f.Name] = true })
+	fileSet := map[string]bool{}
+	cfgFile := opts.ConfigFile
+	if cfgFile == "" {
+		cfgFile = config.DefaultConfigPath() // "" when absent: optional
+	}
+	if cfgFile != "" {
+		var err error
+		fileSet, err = config.ApplyFile(fs, cfgFile, func(k string) bool { return cliSet[k] })
+		if err != nil {
+			fmt.Fprintf(stderr, "s3logscan: %v\n", err)
+			return 2
+		}
+	}
+
+	// -group defaults on for humans: when neither the command line nor
+	// the config file chose, group whenever stdout is a terminal (and
+	// grouping is applicable). Piped/redirected output keeps the
+	// stable single-line format.
+	groupSet := cliSet["group"] || fileSet["group"]
+	opts.Group = resolveGroup(groupSet, opts.Group, opts.GrepPattern != "", opts.NamesOnly, isTerminal(stdout))
+
 	cfg, err := opts.Build()
 	if err != nil {
 		fmt.Fprintf(stderr, "s3logscan: %v\n", err)
@@ -131,6 +157,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return scan.ExitCode(result)
 }
 
+// resolveGroup decides the effective -group value. An explicit flag
+// always wins; otherwise grouping defaults on exactly when it is
+// applicable (a content grep, not names-only) and stdout is a
+// terminal — pipes keep the stable single-line format.
+func resolveGroup(explicit, flagValue, grepSet, namesOnly, tty bool) bool {
+	if explicit {
+		return flagValue
+	}
+	return grepSet && !namesOnly && tty
+}
+
 // resolveColor decides whether a stream gets ANSI colors. "always"
 // and "never" are absolute; "auto" colors only when the stream is a
 // terminal, honoring the NO_COLOR convention and TERM=dumb.
@@ -144,6 +181,11 @@ func resolveColor(mode string, w io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return false
 	}
+	return isTerminal(w)
+}
+
+// isTerminal reports whether w is an interactive terminal.
+func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
 		return false
