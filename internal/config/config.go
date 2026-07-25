@@ -30,6 +30,8 @@ type Options struct {
 	Bucket               string
 	Prefix               string
 	AllowWholeBucketScan bool
+	ClusterName          string
+	ClusterID            string
 
 	KeyPattern  string
 	GrepPattern string
