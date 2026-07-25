@@ -48,16 +48,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "s3logscan %s (commit %s, built %s)\n", version, commit, date)
 		return 0
 	}
-	// -group defaults on for humans: when the flag was not given
-	// explicitly, group whenever stdout is a terminal (and grouping
-	// is applicable). Piped/redirected output keeps the stable
-	// single-line format; an explicit -group/-group=false always wins.
-	groupSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "group" {
-			groupSet = true
+	// Config file: standing defaults (cluster name, pattern, -i, ...)
+	// read from -config or ~/.config/s3logscan/config, applied only to
+	// flags NOT given on the command line — CLI always takes priority.
+	cliSet := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { cliSet[f.Name] = true })
+	fileSet := map[string]bool{}
+	cfgFile := opts.ConfigFile
+	if cfgFile == "" {
+		cfgFile = config.DefaultConfigPath() // "" when absent: optional
+	}
+	if cfgFile != "" {
+		var err error
+		fileSet, err = config.ApplyFile(fs, cfgFile, func(k string) bool { return cliSet[k] })
+		if err != nil {
+			fmt.Fprintf(stderr, "s3logscan: %v\n", err)
+			return 2
 		}
-	})
+	}
+
+	// -group defaults on for humans: when neither the command line nor
+	// the config file chose, group whenever stdout is a terminal (and
+	// grouping is applicable). Piped/redirected output keeps the
+	// stable single-line format.
+	groupSet := cliSet["group"] || fileSet["group"]
 	opts.Group = resolveGroup(groupSet, opts.Group, opts.GrepPattern != "", opts.NamesOnly, isTerminal(stdout))
 
 	cfg, err := opts.Build()

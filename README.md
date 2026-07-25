@@ -70,6 +70,8 @@ reporting, and scripting with exit codes.
 -progress duration              status line to stderr every interval, e.g. 2s (0 = off)
 -verbose                        log listing pages and per-object scan starts (stderr)
 -color auto|always|never        colorize results (default auto: only on a terminal)
+-config file                    'flag = value' defaults file (default:
+                                ~/.config/s3logscan/config if present); CLI wins
 -group                          key-as-heading output (default: on when stdout is a
                                 terminal; -group=false forces classic flat lines)
 ```
@@ -384,6 +386,34 @@ s3logscan -bucket shared-logs -prefix team/ -grep 'ERROR' \
 costs on a requester-pays bucket. `-expected-bucket-owner` makes every
 call fail unless the bucket belongs to that account — protection
 against bucket-name squatting across accounts.
+
+#### Keep standing defaults in a config file
+
+When the cluster, pattern, and preferences rarely change and only the
+application ID varies, put the constants in
+`~/.config/s3logscan/config` (or any file named with `-config`):
+
+```
+# ~/.config/s3logscan/config
+cluster-name = hbase-prod
+grep = ERROR
+i = true
+progress = 2s
+```
+
+Then a scan is just the part that changes:
+
+```
+s3logscan -key application_1700000000000_0042
+```
+
+Rules: one `flag = value` per line (flag names exactly as on the CLI),
+`#` comments and blank lines ignored, values may be double-quoted to
+keep leading/trailing spaces. **Any flag given on the command line
+takes priority over the file** — `s3logscan -key ... -grep FATAL`
+overrides the file's `grep` for that run. Unknown options and invalid
+values fail fast with the file and line number. `config` and `version`
+cannot be set from the file.
 
 #### Use exit codes in scripts
 
