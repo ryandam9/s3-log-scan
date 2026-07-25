@@ -150,7 +150,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.DurationVar(&o.Progress, "progress", 0, "print a status line to stderr every interval, e.g. 2s (0 = off)")
 	fs.BoolVar(&o.Verbose, "verbose", false, "log each listing page and each object as scanning starts (stderr)")
 	fs.StringVar(&o.Color, "color", "auto", `colorize results: "auto" (only when stdout is a terminal), "always", or "never"`)
-	fs.BoolVar(&o.Group, "group", false, "print each object key once as a heading with its matches indented below")
+	fs.BoolVar(&o.Group, "group", false, "print each object key once as a heading with its matches indented below (default: on when stdout is a terminal; -group=false forces flat lines)")
 	return fs, o
 }
 

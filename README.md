@@ -70,7 +70,8 @@ reporting, and scripting with exit codes.
 -progress duration              status line to stderr every interval, e.g. 2s (0 = off)
 -verbose                        log listing pages and per-object scan starts (stderr)
 -color auto|always|never        colorize results (default auto: only on a terminal)
--group                          print each object key once as a heading, matches indented
+-group                          key-as-heading output (default: on when stdout is a
+                                terminal; -group=false forces classic flat lines)
 ```
 
 Regex patterns use Go RE2 semantics: no lookaround, no backreferences.
@@ -253,12 +254,15 @@ me a few examples and stop spending money" lever: combine with
 #### Group matches under each object
 
 When keys are deep (`a/b/c/d/e/.../app.log`), repeating the full path
-on every matching line drowns the content. `-group` prints each
+on every matching line drowns the content. Grouped output prints each
 object's key once as a heading with its matches indented below,
-ripgrep-style:
+ripgrep-style — and it is the **default when stdout is a terminal**
+(like `-color auto`). Piped or redirected output keeps the classic
+single-line format for scripts; force either mode with `-group` /
+`-group=false`.
 
 ```
-s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ -grep 'ERROR' -group
+s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ -grep 'ERROR'
 ```
 
 ```
@@ -413,7 +417,9 @@ of keys under the prefix. Always scope the prefix to a cluster
 Matches go to stdout in completion order (non-deterministic under
 concurrency) and are flushed as they are found — the writer flushes
 whenever its queue goes idle, so results appear promptly during a long
-scan while bursts still batch efficiently:
+scan while bursts still batch efficiently. On a terminal, matches are
+grouped under each object's key by default (see the `-group` example);
+pipes and redirects get the flat single-line format below:
 
 ```
 s3://bucket/key:lineNo: text
