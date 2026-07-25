@@ -67,10 +67,53 @@ type Options struct {
 	Group               bool
 }
 
+// usageExamples is appended to the -h/-help output so the common
+// workflows are discoverable without opening the README.
+const usageExamples = `
+Examples:
+  Grep a prefix for a pattern:
+    s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ -grep 'ERROR|Exception'
+
+  Scan an EMR cluster by name (bucket and prefix come from the
+  cluster's S3 log destination; no -bucket/-prefix needed):
+    s3logscan -cluster-name hbase-prod -grep ERROR
+
+  One cluster, one application:
+    s3logscan -cluster-name hbase-prod -key application_1700000000000_0042 -grep ERROR
+
+  Discover which application logged an error (step logs first):
+    s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ \
+        -grep 'Table or view not found' -F -l -discover-apps -smallest-first
+
+  List matching keys only, downloading nothing (omit -grep):
+    s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/steps/
+
+  Readable output for deep hierarchies, with live progress:
+    s3logscan -bucket b -allow-whole-bucket-scan -grep kyneton -i -group -progress 2s
+
+  Show 20 example matches, then stop downloading:
+    s3logscan -bucket b -prefix logs/ -grep ERROR -max-total-matches 20
+
+  Only objects modified on one UTC day (-after inclusive, -before exclusive):
+    s3logscan -bucket b -prefix logs/ -after 2026-07-20 -before 2026-07-21 -grep ERROR
+
+Exit codes:
+  0 matched; 1 no matches; 2 usage/credential/listing failure;
+  3 object errors, partial scans, or -overall-timeout; 130 interrupted.
+
+Full documentation: https://github.com/ryandam9/s3-log-scan
+`
+
 // NewFlagSet binds all flags (§11) onto a fresh FlagSet.
 func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(out)
+	fs.Usage = func() {
+		fmt.Fprintf(out, "s3logscan — a resource-budgeted concurrent scanner for EMR/YARN logs in S3\n\n")
+		fmt.Fprintf(out, "Usage: %s [flags]\n\nFlags:\n", name)
+		fs.PrintDefaults()
+		fmt.Fprint(out, usageExamples)
+	}
 	o := &Options{}
 
 	fs.StringVar(&o.Bucket, "bucket", "", "S3 bucket name (required unless -cluster-name/-cluster-id derive it)")

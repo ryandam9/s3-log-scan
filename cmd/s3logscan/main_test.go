@@ -6,15 +6,27 @@ import (
 	"testing"
 )
 
-// M-04: help is an informational success.
+// M-04: help is an informational success — and it carries worked
+// examples and the exit-code cheat sheet, not just the flag list.
 func TestHelpExitsZero(t *testing.T) {
 	for _, flag := range []string{"-h", "-help"} {
 		var stdout, stderr bytes.Buffer
 		if code := run([]string{flag}, &stdout, &stderr); code != 0 {
 			t.Errorf("%s: exit %d want 0", flag, code)
 		}
-		if !strings.Contains(stderr.String(), "-bucket") {
-			t.Errorf("%s: usage text missing", flag)
+		usage := stderr.String()
+		for _, want := range []string{
+			"-bucket",
+			"-version",
+			"Examples:",
+			"-cluster-name hbase-prod",
+			"-discover-apps",
+			"Exit codes:",
+			"130 interrupted",
+		} {
+			if !strings.Contains(usage, want) {
+				t.Errorf("%s: usage missing %q", flag, want)
+			}
 		}
 	}
 }
