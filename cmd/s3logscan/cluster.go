@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -34,13 +35,12 @@ func (m clusterMatch) String() string {
 	return fmt.Sprintf("%s (%s, %s)", m.ID, m.State, created)
 }
 
-// resolveClusterID finds the EMR cluster ID for a cluster name via
-// ListClusters, considering only clusters that are currently RUNNING
-// or WAITING (filtered server-side). Logs of terminated clusters can
-// still be scanned by passing their ID with -cluster-id. When several
-// active clusters share the name, the most recently created one is
-// chosen and the others are returned so the caller can say so.
-func resolveClusterID(ctx context.Context, client emrAPI, name string) (chosen clusterMatch, others []clusterMatch, err error) {
+// resolveClusters finds every EMR cluster with the given name that is
+// currently RUNNING or WAITING (filtered server-side), newest first.
+// All of them are scanned — same-name clusters are siblings, and the
+// application being investigated may live on any of them. Logs of
+// terminated clusters can still be scanned via -cluster-id.
+func resolveClusters(ctx context.Context, client emrAPI, name string) ([]clusterMatch, error) {
 	var matches []clusterMatch
 	input := &emr.ListClustersInput{
 		ClusterStates: []emrtypes.ClusterState{
@@ -51,7 +51,7 @@ func resolveClusterID(ctx context.Context, client emrAPI, name string) (chosen c
 	for {
 		out, err := client.ListClusters(ctx, input)
 		if err != nil {
-			return clusterMatch{}, nil, fmt.Errorf("listing EMR clusters: %w", err)
+			return nil, fmt.Errorf("listing EMR clusters: %w", err)
 		}
 		for _, c := range out.Clusters {
 			if aws.ToString(c.Name) != name {
@@ -72,15 +72,41 @@ func resolveClusterID(ctx context.Context, client emrAPI, name string) (chosen c
 		input.Marker = out.Marker
 	}
 
-	switch len(matches) {
-	case 0:
-		return clusterMatch{}, nil, fmt.Errorf("no running or waiting EMR cluster named %q found (terminated clusters can be targeted with -cluster-id)", name)
-	case 1:
-		return matches[0], nil, nil
-	default:
-		sort.Slice(matches, func(i, j int) bool { return matches[i].Created.After(matches[j].Created) })
-		return matches[0], matches[1:], nil
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no running or waiting EMR cluster named %q found (terminated clusters can be targeted with -cluster-id)", name)
 	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Created.After(matches[j].Created) })
+	return matches, nil
+}
+
+// scanScope is one bucket/prefix a run will cover; multi-cluster
+// resolution produces one per cluster.
+type scanScope struct {
+	Bucket  string
+	Prefix  string
+	Cluster string // cluster ID, "" for plain bucket/prefix scans
+}
+
+// clusterScopes turns the cluster flags into concrete scan scopes.
+// Each cluster resolves its own log destination unless an explicit
+// bucket overrides it. A cluster whose destination cannot be resolved
+// is reported and skipped (failed=true) rather than blocking the
+// remaining clusters.
+func clusterScopes(ctx context.Context, client emrAPI, clusters []clusterMatch, bucket, prefix string, warn io.Writer) (scopes []scanScope, failed bool) {
+	for _, c := range clusters {
+		b, p := bucket, prefix
+		if b == "" {
+			var err error
+			b, p, err = clusterLogDestination(ctx, client, c.ID)
+			if err != nil {
+				fmt.Fprintf(warn, "s3logscan: %v; skipping cluster %s\n", err, c.ID)
+				failed = true
+				continue
+			}
+		}
+		scopes = append(scopes, scanScope{Bucket: b, Prefix: joinClusterPrefix(p, c.ID), Cluster: c.ID})
+	}
+	return scopes, failed
 }
 
 // joinClusterPrefix appends an EMR cluster ID to the key prefix so
