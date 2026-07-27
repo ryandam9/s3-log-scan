@@ -98,63 +98,102 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "s3logscan: loading AWS configuration: %v\n", err)
 		return 2
 	}
-	// Cluster scoping: resolve -cluster-name to the active cluster's
-	// ID, derive the bucket/prefix from the cluster's S3 log
-	// destination when they were not given, and pin the prefix to
-	// .../<cluster-id>/ so listing covers only that cluster.
+	// Cluster scoping: -cluster-name resolves EVERY running/waiting
+	// cluster with that name — same-name clusters are siblings, and
+	// the application under investigation may live on any of them —
+	// and each cluster contributes one scan scope with its own log
+	// destination. -cluster-id contributes exactly one.
+	scopes := []scanScope{{Bucket: cfg.Bucket, Prefix: cfg.Prefix}}
+	scopeFailures := false
 	if opts.ClusterName != "" || opts.ClusterID != "" {
 		emrClient := emr.NewFromConfig(awsCfg)
-		clusterID := opts.ClusterID
+		clusters := []clusterMatch{{ID: opts.ClusterID}}
 		if opts.ClusterName != "" {
-			chosen, others, err := resolveClusterID(ctx, emrClient, opts.ClusterName)
+			var err error
+			clusters, err = resolveClusters(ctx, emrClient, opts.ClusterName)
 			if err != nil {
 				fmt.Fprintf(stderr, "s3logscan: %v\n", err)
 				return 2
 			}
-			clusterID = chosen.ID
-			if len(others) > 0 {
-				fmt.Fprintf(stderr, "s3logscan: %d running/waiting clusters named %q; using the newest, %s\n",
-					len(others)+1, opts.ClusterName, chosen)
-				for _, m := range others {
-					fmt.Fprintf(stderr, "s3logscan:   also matched: %s (target it with -cluster-id)\n", m)
+			if len(clusters) > 1 {
+				fmt.Fprintf(stderr, "s3logscan: %d running/waiting clusters named %q; scanning all of them:\n",
+					len(clusters), opts.ClusterName)
+				for _, m := range clusters {
+					fmt.Fprintf(stderr, "s3logscan:   %s\n", m)
 				}
 			}
 		}
-		bucket, prefix := opts.Bucket, opts.Prefix
-		if bucket == "" {
-			var err error
-			bucket, prefix, err = clusterLogDestination(ctx, emrClient, clusterID)
-			if err != nil {
-				fmt.Fprintf(stderr, "s3logscan: %v\n", err)
-				return 2
+		scopes, scopeFailures = clusterScopes(ctx, emrClient, clusters, opts.Bucket, opts.Prefix, stderr)
+		if len(scopes) == 0 {
+			return 2
+		}
+	}
+
+	// One engine run per scope, sequentially. -max-total-matches is a
+	// budget across ALL scopes: each run gets what the previous runs
+	// left over. Exit codes combine by severity (2 > 3 > 0 > 1);
+	// interruption stops everything immediately.
+	worst := -1
+	if scopeFailures {
+		worst = 2
+	}
+	remaining := cfg.MaxTotalMatches // 0 = unlimited
+	for _, sc := range scopes {
+		if cfg.MaxTotalMatches > 0 && remaining <= 0 {
+			break // global match budget exhausted
+		}
+		runCfg := *cfg
+		runCfg.Bucket = sc.Bucket
+		runCfg.Prefix = sc.Prefix
+		runCfg.MaxTotalMatches = remaining
+
+		// Unless -region was given explicitly, resolve each bucket's
+		// actual region (log destinations can differ per cluster) so
+		// cross-region buckets work without configuration. Detection
+		// failures fall back to the configured region.
+		scopeAWS := awsCfg.Copy()
+		if opts.Region == "" {
+			if region, ok := resolveBucketRegion(ctx, awsCfg, runCfg.Bucket); ok {
+				scopeAWS.Region = region
 			}
 		}
-		cfg.Bucket = bucket
-		cfg.Prefix = joinClusterPrefix(prefix, clusterID)
-		fmt.Fprintf(stderr, "s3logscan: scanning s3://%s/%s\n", cfg.Bucket, cfg.Prefix)
-	}
+		if sc.Cluster != "" {
+			fmt.Fprintf(stderr, "s3logscan: scanning s3://%s/%s\n", runCfg.Bucket, runCfg.Prefix)
+		}
 
-	// Unless -region was given explicitly, resolve the bucket's actual
-	// region so cross-region buckets work without configuration
-	// (IllegalLocationConstraintException / PermanentRedirect
-	// otherwise). Detection failures fall back to the configured
-	// region and let the real operation report its error.
-	if opts.Region == "" {
-		if region, ok := resolveBucketRegion(ctx, awsCfg, cfg.Bucket); ok {
-			awsCfg.Region = region
+		engine := scan.NewEngine(&runCfg, newS3Client(scopeAWS), stderr)
+		result := engine.Run(ctx, stdout)
+
+		engine.Warner().Flush()
+		if result.ListingErr != nil {
+			fmt.Fprintf(stderr, "s3logscan: %v\n", result.ListingErr)
+		}
+		scan.PrintSummary(stderr, result, runCfg.ListOnly, resolveColor(opts.Color, stderr))
+
+		code := scan.ExitCode(result)
+		if code == 130 {
+			return 130
+		}
+		worst = combineExit(worst, code)
+		if cfg.MaxTotalMatches > 0 {
+			remaining -= result.Counters.MatchedLines.Load()
 		}
 	}
-	client := newS3Client(awsCfg)
+	return worst
+}
 
-	engine := scan.NewEngine(cfg, client, stderr)
-	result := engine.Run(ctx, stdout)
-
-	engine.Warner().Flush()
-	if result.ListingErr != nil {
-		fmt.Fprintf(stderr, "s3logscan: %v\n", result.ListingErr)
+// combineExit merges per-scope exit codes into the run's overall code
+// by severity: fatal (2) > partial/object errors (3) > matched (0) >
+// no matches (1). -1 means "no code yet".
+func combineExit(a, b int) int {
+	severity := map[int]int{2: 3, 3: 2, 0: 1, 1: 0}
+	if a < 0 {
+		return b
 	}
-	scan.PrintSummary(stderr, result, cfg.ListOnly, resolveColor(opts.Color, stderr))
-	return scan.ExitCode(result)
+	if severity[b] > severity[a] {
+		return b
+	}
+	return a
 }
 
 // resolveGroup decides the effective -group value. An explicit flag

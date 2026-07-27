@@ -173,9 +173,14 @@ s3logscan: scanning s3://my-emr-logs/logs/j-1ABC2DEF3GHI4/
 
 Details:
 
-- If several active clusters share the name, the newest is used and
-  the others are listed on stderr with their IDs so you can target one
-  precisely with `-cluster-id`.
+- **If several active clusters share the name, all of them are
+  scanned**, newest first — the application under investigation may
+  live on any of them. Each cluster resolves its own log destination,
+  gets its own scope line and summary, and exit codes combine by
+  severity (fatal > partial > matched > no matches). A cluster whose
+  destination can't be resolved is reported and skipped without
+  blocking the rest. `-max-total-matches` is a budget across all the
+  clusters combined. Target exactly one with `-cluster-id`.
 - `-cluster-id j-XXX` does the same scoping for any cluster state —
   terminated clusters' logs remain in S3 and their `LogUri` is still
   describable.
