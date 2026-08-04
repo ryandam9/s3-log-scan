@@ -74,3 +74,26 @@ func TestConfigFileGroupParsed(t *testing.T) {
 		t.Fatalf("exit %d stderr %q", code, stderr.String())
 	}
 }
+
+// "md = true" as a standing default must not break runs that are not
+// app-scoped: without -app-id it is silently ignored (validation moves
+// on to the workers error) instead of demanding -app-id.
+func TestConfigFileMDSoftDefault(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ngrep = ERROR\nmd = true\nworkers = 0\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
+		t.Fatalf("file-provided md must be ignored without -app-id: exit %d stderr %q", code, stderr.String())
+	}
+}
+
+// An explicit -md on the command line keeps strict validation even
+// when the config file also sets it.
+func TestConfigFileMDExplicitCLIStaysStrict(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ngrep = ERROR\nmd = true\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p, "-md"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "-md requires -app-id") {
+		t.Fatalf("exit %d stderr %q", code, stderr.String())
+	}
+}

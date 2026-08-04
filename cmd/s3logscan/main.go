@@ -69,6 +69,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// "md = true" in the config file is a standing default, not a
+	// demand: it applies when the run is app-scoped with a pattern
+	// (-app-id and -grep present) and is silently ignored otherwise, so
+	// the same config file still serves list-only and cluster-wide
+	// runs. An explicit -md on the command line keeps strict validation.
+	if opts.MDReport && !cliSet["md"] && fileSet["md"] && (opts.AppID == "" || opts.GrepPattern == "") {
+		opts.MDReport = false
+	}
+
 	// -group defaults on for humans: when neither the command line nor
 	// the config file chose, group whenever stdout is a terminal (and
 	// grouping is applicable). Piped/redirected output keeps the
