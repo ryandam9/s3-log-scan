@@ -118,6 +118,18 @@ func joinClusterPrefix(prefix, clusterID string) string {
 	return prefix + clusterID + "/"
 }
 
+// joinAppPrefix appends a YARN application's container-log directory
+// ("containers/<app-id>/") to a scope prefix. EMR's log layout is
+// deterministic — bucket/prefix/<cluster-id>/containers/<app-id>/… —
+// so the application's objects are reached by prefix alone, without
+// enumerating the rest of the cluster's keys.
+func joinAppPrefix(prefix, appID string) string {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return prefix + "containers/" + appID + "/"
+}
+
 // clusterLogDestination reads the cluster's "Log destination in
 // Amazon S3" (LogUri) via DescribeCluster, so -bucket/-prefix need not
 // be passed at all. Works for terminated clusters too.

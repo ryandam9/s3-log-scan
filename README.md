@@ -41,6 +41,8 @@ reporting, and scripting with exit codes.
 -cluster-name string            EMR cluster name; resolves the RUNNING/WAITING cluster,
                                 reads its S3 log destination, scopes the scan to it
 -cluster-id string              EMR cluster ID (j-...); same scoping, any cluster state
+-app-id string                  YARN application ID; lists only
+                                .../containers/<app-id>/ (a server-side prefix — no key search)
 -allow-whole-bucket-scan        explicit opt-in to empty-prefix enumeration
 -key pattern                    object-key filter (client-side; cuts GETs, not LIST work)
 -grep pattern                   content filter; omit for list-only mode (no downloads)
@@ -117,14 +119,19 @@ Exit code 0: matches found, nothing skipped or failed.
 
 ```
 s3logscan -bucket my-emr-logs -prefix logs/j-1ABC2DEF3GHI4/ \
-  -key application_1700000000000_0042 -grep 'ERROR' -i
+  -app-id application_1700000000000_0042 -grep 'ERROR' -i
 ```
 
-`-key` filters *object keys* client-side before any download, so only
-container logs belonging to that application are fetched; `-i` makes
-the content match case-insensitive (`ERROR`, `error`, `Error`). The
-summary's `filtered out: ... key-pattern filtered` line shows how many
-downloads the key filter saved.
+EMR stores an application's container logs under the deterministic
+path `<prefix>/<cluster-id>/containers/<app-id>/…`, so `-app-id`
+appends `containers/<app-id>/` to the scan prefix and S3 lists **only
+that application's objects** — no enumeration of the rest of the
+cluster's keys, no client-side filtering. `-i` makes the content match
+case-insensitive (`ERROR`, `error`, `Error`).
+
+For layouts that don't follow this structure, `-key` remains available
+as a client-side *object-key* filter: it still lists every key under
+the prefix but downloads only the ones matching the pattern.
 
 #### Discover which application produced an error
 
@@ -158,17 +165,20 @@ and the summary turns the discovery into your next query:
 #### Scan an EMR cluster by name — no bucket or prefix needed
 
 ```
-s3logscan -cluster-name hbase-prod -key application_1700000000000_0042 -grep 'ERROR'
+s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep 'ERROR'
 ```
 
 `-cluster-name` asks EMR for the RUNNING/WAITING cluster with that
 name, reads its "Log destination in Amazon S3" (`LogUri`) from
 `DescribeCluster`, and scopes the whole scan to
 `s3://<log-bucket>/<log-prefix>/<cluster-id>/` — no `-bucket` or
-`-prefix` required. The chosen scope is echoed to stderr:
+`-prefix` required. With `-app-id` the scope narrows further to
+`.../<cluster-id>/containers/<app-id>/`, so the whole run touches
+nothing but that application's logs. The chosen scope is echoed to
+stderr:
 
 ```
-s3logscan: scanning s3://my-emr-logs/logs/j-1ABC2DEF3GHI4/
+s3logscan: scanning s3://my-emr-logs/logs/j-1ABC2DEF3GHI4/containers/application_1700000000000_0042/
 ```
 
 Details:
@@ -409,7 +419,7 @@ progress = 2s
 Then a scan is just the part that changes:
 
 ```
-s3logscan -key application_1700000000000_0042
+s3logscan -app-id application_1700000000000_0042
 ```
 
 Rules: one `flag = value` per line (flag names exactly as on the CLI),
@@ -439,7 +449,10 @@ matches" printed alongside exit 3 is not proof of absence.
 
 ### What filtering does and does not save
 
-The prefix is the **only server-side filter**. `-key`, `-ext`, `-max-size`,
+The prefix is the **only server-side filter** — and `-cluster-name`/
+`-cluster-id` and `-app-id` work by *building* that prefix
+(`.../<cluster-id>/containers/<app-id>/`), which is why they cut both
+listing and download work. `-key`, `-ext`, `-max-size`,
 and the time window run client-side against listing pages: they cut
 `GetObject` calls, downloaded bytes, and decompression work — often by
 orders of magnitude — but listing time remains proportional to the number

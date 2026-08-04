@@ -219,3 +219,16 @@ func TestJoinClusterPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestJoinAppPrefix(t *testing.T) {
+	cases := []struct{ prefix, appID, want string }{
+		{"logs/j-1ABC/", "application_1_2", "logs/j-1ABC/containers/application_1_2/"},
+		{"logs/j-1ABC", "application_1_2", "logs/j-1ABC/containers/application_1_2/"},
+		{"j-1ABC/", "application_1700000000000_0042", "j-1ABC/containers/application_1700000000000_0042/"},
+	}
+	for _, tc := range cases {
+		if got := joinAppPrefix(tc.prefix, tc.appID); got != tc.want {
+			t.Errorf("joinAppPrefix(%q, %q) = %q, want %q", tc.prefix, tc.appID, got, tc.want)
+		}
+	}
+}
