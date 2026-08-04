@@ -58,6 +58,8 @@ func TestValidationFailFast(t *testing.T) {
 		{"bad app id", []string{"-cluster-name", "hbase", "-app-id", "app_123"}, "-app-id must look like"},
 		{"app id with trailing junk", []string{"-cluster-name", "hbase", "-app-id", "application_1_2.log"}, "-app-id must look like"},
 		{"app id without cluster or prefix", []string{"-bucket", "b", "-allow-whole-bucket-scan", "-app-id", "application_1700000000000_0042"}, "-app-id needs the cluster's log directory"},
+		{"md without app id", []string{"-bucket", "b", "-prefix", "p", "-grep", "x", "-md"}, "-md requires -app-id"},
+		{"md without grep", []string{"-cluster-name", "hbase", "-app-id", "application_1_2", "-md"}, "-md requires -grep"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,6 +105,16 @@ func TestValidConfigs(t *testing.T) {
 	}
 	if err := build(t, "-bucket", "b", "-prefix", "logs/j-1ABC/", "-app-id", "application_1700000000000_0042"); err != nil {
 		t.Fatalf("app-id with explicit prefix, list-only: %v", err)
+	}
+	// -md rides on -app-id (file name) and -grep (the search), and
+	// flips on matched-key collection in the engine config.
+	o, _ := parse(t, "-cluster-name", "hbase-prod", "-app-id", "application_1_2", "-grep", "x", "-md")
+	cfg, err := o.Build()
+	if err != nil {
+		t.Fatalf("-md with app-id and grep: %v", err)
+	}
+	if !cfg.CollectMatchedKeys {
+		t.Fatal("-md must set CollectMatchedKeys")
 	}
 }
 

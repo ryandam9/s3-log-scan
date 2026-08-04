@@ -67,6 +67,8 @@ reporting, and scripting with exit codes.
 -request-payer requester        requester-pays buckets
 -expected-bucket-owner id       cross-account safety check
 -sanitize-output bool           default true
+-md                             write a Markdown report to ~/logscan/<app-id>.md:
+                                matched file names + the screen output (needs -app-id, -grep)
 -max-warnings N                 default 100
 -region string                  AWS region override
 -progress duration              status line to stderr every interval, e.g. 2s (0 = off)
@@ -132,6 +134,48 @@ case-insensitive (`ERROR`, `error`, `Error`).
 For layouts that don't follow this structure, `-key` remains available
 as a client-side *object-key* filter: it still lists every key under
 the prefix but downloads only the ones matching the pattern.
+
+#### Save the run as a Markdown report
+
+```
+s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep 'ERROR' -md
+```
+
+`-md` writes `~/logscan/<app-id>.md` when the run ends (interrupted
+runs included), alongside the normal screen output. The report has two
+`sh`-fenced sections: the names of the files where the pattern was
+found, and the screen output exactly as it appeared (ANSI colors
+stripped, summary included):
+
+````markdown
+# s3logscan — application_1700000000000_0042
+
+- **Generated**: 2026-08-04 10:30:00 UTC
+- **Pattern**: `ERROR`
+- **Scanned**: `s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/`
+- **Files with matches**: 1
+
+## Files with matches
+
+```sh
+s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/container_01_000001/stderr.gz
+```
+
+## Screen output
+
+```sh
+s3logscan: scanning s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/
+s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/container_01_000001/stderr.gz
+      44: 26/07/20 09:14:02 ERROR Client: User class threw exception
+---
+s3logscan: completed in 4.2s
+  ...
+```
+````
+
+`-md` requires `-app-id` (the report is named after the application)
+and `-grep` (it records where a pattern was found). It works from the
+config file too (`md = true`) for always-on reports.
 
 #### Discover which application produced an error
 

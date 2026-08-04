@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,12 @@ type Config struct {
 	// stderr only; stdout stays matches-only.
 	Progress time.Duration
 	Verbose  bool
+
+	// CollectMatchedKeys records the s3:// URI of every object with at
+	// least one match into RunResult.MatchedKeys (the -md report needs
+	// the list, not just the count). Off by default: matched keys are
+	// unbounded in principle, so only report runs pay for the slice.
+	CollectMatchedKeys bool
 }
 
 // RunResult is what the engine hands back to main for exit-code and
@@ -62,11 +69,12 @@ type Config struct {
 type RunResult struct {
 	Counters      *Counters
 	AppIDs        *AppIDSet
-	ListingErr    error // fatal: exit 2
-	WriteErr      error // stdout failed (EPIPE etc.)
-	TimedOut      bool  // -overall-timeout expired (exit 3, H-02)
-	Interrupted   bool  // external cancellation: SIGINT/SIGTERM (exit 130)
-	MatchLimitHit bool  // -max-total-matches reached; a successful early stop
+	MatchedKeys   []string // sorted s3:// URIs; only with CollectMatchedKeys
+	ListingErr    error    // fatal: exit 2
+	WriteErr      error    // stdout failed (EPIPE etc.)
+	TimedOut      bool     // -overall-timeout expired (exit 3, H-02)
+	Interrupted   bool     // external cancellation: SIGINT/SIGTERM (exit 130)
+	MatchLimitHit bool     // -max-total-matches reached; a successful early stop
 	Elapsed       time.Duration
 }
 
@@ -81,6 +89,9 @@ type Engine struct {
 	warner   *Warner
 
 	listingDone atomic.Bool
+
+	matchedMu   sync.Mutex
+	matchedKeys []string // populated only with CollectMatchedKeys
 }
 
 // NewEngine builds an engine around an S3 client. warnOut receives
@@ -172,9 +183,11 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 	progressWG.Wait()
 	writeErr := writer.Close()
 
+	sort.Strings(e.matchedKeys) // workers finish in arbitrary order
 	res := &RunResult{
 		Counters:      &e.counters,
 		AppIDs:        e.appIDs,
+		MatchedKeys:   e.matchedKeys,
 		ListingErr:    listErr,
 		WriteErr:      writeErr,
 		MatchLimitHit: e.cfg.Scan.limiter.Satisfied(),
@@ -458,6 +471,15 @@ func (e *Engine) scanOne(ctx context.Context, d ObjectDescriptor, zipSem chan st
 	if outcome.Matches > 0 {
 		e.counters.MatchedObjects.Add(1)
 		e.appIDs.AddAll(outcome.AppIDs)
+		if e.cfg.CollectMatchedKeys {
+			key := d.Key
+			if e.cfg.SanitizeOutput {
+				key = SanitizeString(key)
+			}
+			e.matchedMu.Lock()
+			e.matchedKeys = append(e.matchedKeys, "s3://"+e.cfg.Bucket+"/"+key)
+			e.matchedMu.Unlock()
+		}
 	}
 	switch {
 	case outcome.Err != nil:

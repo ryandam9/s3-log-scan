@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -137,6 +139,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// -md: tee the bytes shown on screen into a buffer and collect the
+	// matched keys, then render ~/logscan/<app-id>.md when the run ends
+	// (interrupted runs included — found matches are never lost).
+	var mdBuf bytes.Buffer
+	var mdScopes, mdMatched []string
+	engineOut := io.Writer(stdout)
+	if opts.MDReport {
+		engineOut = io.MultiWriter(stdout, &mdBuf)
+	}
+	writeReport := func() (failed bool) {
+		if !opts.MDReport {
+			return false
+		}
+		path, err := reportPath(opts.AppID)
+		if err == nil {
+			err = writeMDReport(path, opts.AppID, opts.GrepPattern, mdScopes, mdMatched, mdBuf.String(), time.Now())
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "s3logscan: %v\n", err)
+			return true
+		}
+		fmt.Fprintf(stderr, "s3logscan: report written to %s\n", path)
+		return false
+	}
+
 	// One engine run per scope, sequentially. -max-total-matches is a
 	// budget across ALL scopes: each run gets what the previous runs
 	// left over. Exit codes combine by severity (2 > 3 > 0 > 1);
@@ -169,24 +196,39 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// so a run always shows where it is looking — including the
 		// containers/<app-id>/ narrowing when -app-id is in play.
 		fmt.Fprintf(stderr, "s3logscan: scanning s3://%s/%s\n", runCfg.Bucket, runCfg.Prefix)
+		if opts.MDReport {
+			scope := fmt.Sprintf("s3://%s/%s", runCfg.Bucket, runCfg.Prefix)
+			mdScopes = append(mdScopes, scope)
+			fmt.Fprintf(&mdBuf, "s3logscan: scanning %s\n", scope)
+		}
 
 		engine := scan.NewEngine(&runCfg, newS3Client(scopeAWS), stderr)
-		result := engine.Run(ctx, stdout)
+		result := engine.Run(ctx, engineOut)
 
 		engine.Warner().Flush()
 		if result.ListingErr != nil {
 			fmt.Fprintf(stderr, "s3logscan: %v\n", result.ListingErr)
 		}
 		scan.PrintSummary(stderr, result, runCfg.ListOnly, resolveColor(opts.Color, stderr))
+		if opts.MDReport {
+			mdMatched = append(mdMatched, result.MatchedKeys...)
+			scan.PrintSummary(&mdBuf, result, runCfg.ListOnly, false)
+		}
 
 		code := scan.ExitCode(result)
 		if code == 130 {
+			writeReport()
 			return 130
 		}
 		worst = combineExit(worst, code)
 		if cfg.MaxTotalMatches > 0 {
 			remaining -= result.Counters.MatchedLines.Load()
 		}
+	}
+	// The report was asked for; failing to write it is a run failure
+	// even when the scan itself succeeded.
+	if writeReport() {
+		worst = combineExit(worst, 2)
 	}
 	return worst
 }
