@@ -438,3 +438,34 @@ func gzipBytesT(t *testing.T, content string) []byte {
 	t.Helper()
 	return gzipBytes(t, content)
 }
+
+// -md report support: with CollectMatchedKeys the run returns the
+// sorted s3:// URIs of every object that matched, and only those.
+func TestEngineCollectMatchedKeys(t *testing.T) {
+	f := newFakeS3(1000)
+	f.put("logs/b.log", "ERROR two\n")
+	f.put("logs/a.log", "ERROR one\nERROR again\n")
+	f.put("logs/c.log", "all quiet\n")
+	cfg := testConfig(t, "ERROR")
+	cfg.CollectMatchedKeys = true
+	res, _, _ := runEngine(t, cfg, f)
+	want := []string{"s3://b/logs/a.log", "s3://b/logs/b.log"}
+	if len(res.MatchedKeys) != len(want) {
+		t.Fatalf("MatchedKeys = %v, want %v", res.MatchedKeys, want)
+	}
+	for i := range want {
+		if res.MatchedKeys[i] != want[i] {
+			t.Fatalf("MatchedKeys = %v, want %v", res.MatchedKeys, want)
+		}
+	}
+}
+
+// Without the opt-in, no keys are retained.
+func TestEngineMatchedKeysOffByDefault(t *testing.T) {
+	f := newFakeS3(1000)
+	f.put("logs/a.log", "ERROR one\n")
+	res, _, _ := runEngine(t, testConfig(t, "ERROR"), f)
+	if res.MatchedKeys != nil {
+		t.Fatalf("MatchedKeys = %v, want nil", res.MatchedKeys)
+	}
+}

@@ -66,6 +66,7 @@ type Options struct {
 	RequestPayer        string
 	ExpectedBucketOwner string
 	SanitizeOutput      bool
+	MDReport            bool
 	MaxWarnings         int
 	Region              string
 	Progress            time.Duration
@@ -89,6 +90,10 @@ Examples:
   One cluster, one application (only .../containers/<app-id>/ is
   listed and downloaded — no key search across the cluster's logs):
     s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep ERROR
+
+  Same scan, also saved as a Markdown report (matched file names plus
+  the screen output) to ~/logscan/application_1700000000000_0042.md:
+    s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep ERROR -md
 
   Discover which application logged an error (step logs first):
     s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ \
@@ -165,6 +170,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.StringVar(&o.RequestPayer, "request-payer", "", `set to "requester" for requester-pays buckets`)
 	fs.StringVar(&o.ExpectedBucketOwner, "expected-bucket-owner", "", "account ID the bucket must belong to (cross-account safety)")
 	fs.BoolVar(&o.SanitizeOutput, "sanitize-output", true, "replace control characters in output")
+	fs.BoolVar(&o.MDReport, "md", false, "write a Markdown report to ~/logscan/<app-id>.md: the matched file names plus the screen output (requires -app-id and -grep)")
 	fs.IntVar(&o.MaxWarnings, "max-warnings", 100, "stderr warning cap (0 = unlimited)")
 	fs.StringVar(&o.Region, "region", "", "AWS region override")
 	fs.DurationVar(&o.Progress, "progress", 0, "print a status line to stderr every interval, e.g. 2s (0 = off)")
@@ -191,6 +197,14 @@ func (o *Options) Build() (*scan.Config, error) {
 		}
 		if !cluster && o.Prefix == "" {
 			return nil, fmt.Errorf("-app-id needs the cluster's log directory to build .../containers/%s/; pass -cluster-name/-cluster-id, or a -prefix that points at it", o.AppID)
+		}
+	}
+	if o.MDReport {
+		if o.AppID == "" {
+			return nil, fmt.Errorf("-md requires -app-id (the report file is named ~/logscan/<app-id>.md)")
+		}
+		if o.GrepPattern == "" {
+			return nil, fmt.Errorf("-md requires -grep (the report records where a search pattern was found)")
 		}
 	}
 	if o.Bucket == "" && !cluster {
@@ -271,6 +285,7 @@ func (o *Options) Build() (*scan.Config, error) {
 		GroupOutput:         o.Group,
 		Progress:            o.Progress,
 		Verbose:             o.Verbose,
+		CollectMatchedKeys:  o.MDReport,
 	}
 
 	cfg.Filters.MaxSize = o.MaxSizeMiB * mib
