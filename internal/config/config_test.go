@@ -55,6 +55,9 @@ func TestValidationFailFast(t *testing.T) {
 		{"group with names-only", []string{"-bucket", "b", "-prefix", "p", "-grep", "x", "-l", "-group"}, "-group cannot be combined with -l"},
 		{"both cluster flags", []string{"-cluster-name", "hbase", "-cluster-id", "j-1A"}, "mutually exclusive"},
 		{"bad cluster id", []string{"-cluster-id", "1ABC"}, "-cluster-id must look like"},
+		{"bad app id", []string{"-cluster-name", "hbase", "-app-id", "app_123"}, "-app-id must look like"},
+		{"app id with trailing junk", []string{"-cluster-name", "hbase", "-app-id", "application_1_2.log"}, "-app-id must look like"},
+		{"app id without cluster or prefix", []string{"-bucket", "b", "-allow-whole-bucket-scan", "-app-id", "application_1700000000000_0042"}, "-app-id needs the cluster's log directory"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,6 +95,14 @@ func TestValidConfigs(t *testing.T) {
 	}
 	if err := build(t, "-bucket", "b", "-prefix", "logs/", "-cluster-name", "hbase-prod", "-grep", "x"); err != nil {
 		t.Fatalf("cluster-name with explicit bucket/prefix: %v", err)
+	}
+	// -app-id rides on either a cluster flag or an explicit prefix
+	// pointing at the cluster's log directory.
+	if err := build(t, "-cluster-name", "hbase-prod", "-app-id", "application_1700000000000_0042", "-grep", "x"); err != nil {
+		t.Fatalf("app-id with cluster-name: %v", err)
+	}
+	if err := build(t, "-bucket", "b", "-prefix", "logs/j-1ABC/", "-app-id", "application_1700000000000_0042"); err != nil {
+		t.Fatalf("app-id with explicit prefix, list-only: %v", err)
 	}
 }
 

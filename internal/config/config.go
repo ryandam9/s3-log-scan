@@ -7,11 +7,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/ryandam9/s3-log-scan/internal/scan"
 )
+
+// appIDFormat validates -app-id: a complete YARN application ID and
+// nothing else, because the value becomes a literal S3 key prefix
+// segment — a partial or decorated ID would silently list nothing.
+var appIDFormat = regexp.MustCompile(`^application_\d+_\d+$`)
 
 const mib = 1 << 20
 
@@ -32,6 +38,7 @@ type Options struct {
 	AllowWholeBucketScan bool
 	ClusterName          string
 	ClusterID            string
+	AppID                string
 
 	KeyPattern  string
 	GrepPattern string
@@ -79,8 +86,9 @@ Examples:
   cluster's S3 log destination; no -bucket/-prefix needed):
     s3logscan -cluster-name hbase-prod -grep ERROR
 
-  One cluster, one application:
-    s3logscan -cluster-name hbase-prod -key application_1700000000000_0042 -grep ERROR
+  One cluster, one application (only .../containers/<app-id>/ is
+  listed and downloaded — no key search across the cluster's logs):
+    s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep ERROR
 
   Discover which application logged an error (step logs first):
     s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ \
@@ -106,7 +114,7 @@ Config file:
       grep = ERROR
       i = true
       progress = 2s
-  With that in place, a scan is just:  s3logscan -key application_..._0042
+  With that in place, a scan is just:  s3logscan -app-id application_..._0042
 
 Exit codes:
   0 matched; 1 no matches; 2 usage/credential/listing failure;
@@ -131,6 +139,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.StringVar(&o.Prefix, "prefix", "", "key prefix; required unless -allow-whole-bucket-scan or a cluster flag")
 	fs.StringVar(&o.ClusterName, "cluster-name", "", "EMR cluster name; resolves the RUNNING/WAITING cluster and scopes the scan to its S3 log destination")
 	fs.StringVar(&o.ClusterID, "cluster-id", "", "EMR cluster ID (j-...); scopes the scan to its S3 log destination (works for terminated clusters)")
+	fs.StringVar(&o.AppID, "app-id", "", "YARN application ID (application_<ts>_<seq>); lists only .../containers/<app-id>/ — EMR's layout makes the path deterministic, no key search needed")
 	fs.BoolVar(&o.AllowWholeBucketScan, "allow-whole-bucket-scan", false, "explicit opt-in to empty-prefix enumeration of the whole bucket")
 	fs.StringVar(&o.KeyPattern, "key", "", "object-key filter (client-side; cuts GETs, not LIST work)")
 	fs.StringVar(&o.GrepPattern, "grep", "", "content filter; omit for list-only mode (no downloads)")
@@ -176,6 +185,14 @@ func (o *Options) Build() (*scan.Config, error) {
 		return nil, fmt.Errorf("-cluster-id must look like j-XXXXXXXXXXXXX, got %q", o.ClusterID)
 	}
 	cluster := o.ClusterName != "" || o.ClusterID != ""
+	if o.AppID != "" {
+		if !appIDFormat.MatchString(o.AppID) {
+			return nil, fmt.Errorf("-app-id must look like application_<timestamp>_<sequence> (e.g. application_1700000000000_0042), got %q", o.AppID)
+		}
+		if !cluster && o.Prefix == "" {
+			return nil, fmt.Errorf("-app-id needs the cluster's log directory to build .../containers/%s/; pass -cluster-name/-cluster-id, or a -prefix that points at it", o.AppID)
+		}
+	}
 	if o.Bucket == "" && !cluster {
 		return nil, fmt.Errorf("-bucket is required (or pass -cluster-name/-cluster-id to derive it from the cluster's S3 log destination)")
 	}

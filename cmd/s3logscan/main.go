@@ -128,6 +128,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	// -app-id narrows every scope to the application's container-log
+	// directory. A scope belonging to a different same-name cluster
+	// simply lists zero keys — one cheap LIST, no downloads.
+	if opts.AppID != "" {
+		for i := range scopes {
+			scopes[i].Prefix = joinAppPrefix(scopes[i].Prefix, opts.AppID)
+		}
+	}
 
 	// One engine run per scope, sequentially. -max-total-matches is a
 	// budget across ALL scopes: each run gets what the previous runs
