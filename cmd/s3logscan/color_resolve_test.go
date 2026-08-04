@@ -33,6 +33,7 @@ func TestResolveColorHonorsNoColor(t *testing.T) {
 }
 
 func TestBadColorValueExitsTwo(t *testing.T) {
+	isolateHome(t)
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-bucket", "b", "-prefix", "p", "-color", "sometimes"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("exit %d want 2", code)
@@ -65,6 +66,7 @@ func TestResolveGroup(t *testing.T) {
 // must leave piped output in the classic single-line format (the
 // -group=false path through run's flag detection).
 func TestGroupExplicitFalseAccepted(t *testing.T) {
+	isolateHome(t)
 	var stdout, stderr bytes.Buffer
 	// Validation error on workers proves parsing got past the group
 	// resolution without a -group-related complaint.

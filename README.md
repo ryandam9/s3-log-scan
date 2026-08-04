@@ -175,7 +175,10 @@ s3logscan: completed in 4.2s
 
 `-md` requires `-app-id` (the report is named after the application)
 and `-grep` (it records where a pattern was found). It works from the
-config file too (`md = true`) for always-on reports.
+config file too (`md = true`) for always-on reports — as a standing
+default it applies only to runs that have both `-app-id` and `-grep`,
+and is silently ignored otherwise, so the same config file still
+serves list-only and cluster-wide scans.
 
 #### Discover which application produced an error
 
