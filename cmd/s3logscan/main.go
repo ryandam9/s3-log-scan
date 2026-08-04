@@ -165,9 +165,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 				scopeAWS.Region = region
 			}
 		}
-		if sc.Cluster != "" {
-			fmt.Fprintf(stderr, "s3logscan: scanning s3://%s/%s\n", runCfg.Bucket, runCfg.Prefix)
-		}
+		// Echo the exact scope every LIST and GET will be confined to,
+		// so a run always shows where it is looking — including the
+		// containers/<app-id>/ narrowing when -app-id is in play.
+		fmt.Fprintf(stderr, "s3logscan: scanning s3://%s/%s\n", runCfg.Bucket, runCfg.Prefix)
 
 		engine := scan.NewEngine(&runCfg, newS3Client(scopeAWS), stderr)
 		result := engine.Run(ctx, stdout)
