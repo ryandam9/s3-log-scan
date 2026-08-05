@@ -10,7 +10,7 @@ import (
 
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "config")
+	p := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func writeTempConfig(t *testing.T, content string) string {
 // Values from the config file reach validation exactly as if typed:
 // an invalid file-provided value fails with the flag's own error.
 func TestConfigFileValuesApplied(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\nmax-line-size = 999\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\nmax-line-size: 999\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-max-line-size") {
@@ -32,7 +32,7 @@ func TestConfigFileValuesApplied(t *testing.T) {
 // workers value is ignored because the CLI provided one; the CLI's
 // bad value is what validation sees.
 func TestConfigFileCLIPriority(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\nworkers = 999\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\nworkers: 999\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-workers", "0"}, &stdout, &stderr)
 	if code != 2 {
@@ -44,7 +44,7 @@ func TestConfigFileCLIPriority(t *testing.T) {
 }
 
 func TestConfigFileUnknownKeyFails(t *testing.T) {
-	p := writeTempConfig(t, "no-such = 1\n")
+	p := writeTempConfig(t, "no-such: 1\n")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-config", p}, &stdout, &stderr); code != 2 {
 		t.Fatalf("exit %d", code)
@@ -67,7 +67,7 @@ func TestConfigFileExplicitMissingFails(t *testing.T) {
 // tests stdout is not a TTY anyway, so here we just prove the value
 // parses and the run proceeds to ordinary validation).
 func TestConfigFileGroupParsed(t *testing.T) {
-	p := writeTempConfig(t, "group = true\ngrep = ERROR\nbucket = b\nprefix = logs/\nworkers = 0\n")
+	p := writeTempConfig(t, "group: true\ngrep: ERROR\nbucket: b\nprefix: logs/\nworkers: 0\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
@@ -79,7 +79,7 @@ func TestConfigFileGroupParsed(t *testing.T) {
 // app-scoped: without -app-id it is silently ignored (validation moves
 // on to the workers error) instead of demanding -app-id.
 func TestConfigFileMDSoftDefault(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ngrep = ERROR\nmd = true\nworkers = 0\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\ngrep: ERROR\nmd: true\nworkers: 0\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
@@ -90,7 +90,7 @@ func TestConfigFileMDSoftDefault(t *testing.T) {
 // An explicit -md on the command line keeps strict validation even
 // when the config file also sets it.
 func TestConfigFileMDExplicitCLIStaysStrict(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ngrep = ERROR\nmd = true\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\ngrep: ERROR\nmd: true\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-md"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-md requires -app-id") {
@@ -102,7 +102,7 @@ func TestConfigFileMDExplicitCLIStaysStrict(t *testing.T) {
 // bad regex would fail at -grep, so reaching the workers error proves
 // resolution succeeded.
 func TestCategoryResolvesFromConfig(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR|Exception\nworkers = 0\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\npatterns:\n  spark: ERROR|Exception\nworkers: 0\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-category", "spark"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
@@ -113,7 +113,7 @@ func TestCategoryResolvesFromConfig(t *testing.T) {
 // Push-back 1: an unknown category is a fail-fast error naming what
 // the file defines — never a silent fallback to an unfiltered scan.
 func TestCategoryUnknownFailsFast(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR\npattern.oom = OOM\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\npatterns:\n  spark: ERROR\n  oom: OOM\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-category", "sprk"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "available: oom, spark") {
@@ -122,7 +122,7 @@ func TestCategoryUnknownFailsFast(t *testing.T) {
 }
 
 func TestCategoryGrepMutuallyExclusive(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\npatterns:\n  spark: ERROR\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-category", "spark", "-grep", "x"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "mutually exclusive") {
@@ -134,7 +134,7 @@ func TestCategoryGrepMutuallyExclusive(t *testing.T) {
 // file category names a bad regex, so reaching the workers error
 // proves the category was dropped, not resolved.
 func TestCategoryFileDefaultLosesToCLIGrep(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ncategory = spark\npattern.spark = ERROR\nworkers = 0\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\ncategory: spark\npatterns:\n  spark: ERROR\nworkers: 0\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-grep", "FATAL"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
@@ -144,7 +144,7 @@ func TestCategoryFileDefaultLosesToCLIGrep(t *testing.T) {
 
 // Two standing defaults naming both grep and category is ambiguous.
 func TestCategoryAndGrepBothFromFileFails(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ngrep = ERROR\ncategory = spark\npattern.spark = X\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\ngrep: ERROR\ncategory: spark\npatterns:\n  spark: X\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "both grep and category") {
@@ -153,7 +153,7 @@ func TestCategoryAndGrepBothFromFileFails(t *testing.T) {
 }
 
 func TestCategoryRejectsFixedString(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\npatterns:\n  spark: ERROR\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-category", "spark", "-F"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-F cannot be combined with -category") {
@@ -164,7 +164,7 @@ func TestCategoryRejectsFixedString(t *testing.T) {
 // "cat = true" as a standing default applies only to patternless
 // runs: with a category in play it is dropped instead of conflicting.
 func TestConfigFileCatSoftDefault(t *testing.T) {
-	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ncat = true\npattern.spark = ERROR\nworkers = 0\n")
+	p := writeTempConfig(t, "bucket: b\nprefix: logs/\ncat: true\npatterns:\n  spark: ERROR\nworkers: 0\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"-config", p, "-category", "spark"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "-workers") {

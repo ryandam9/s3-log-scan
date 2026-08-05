@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/emr v1.64.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.0
 	github.com/aws/smithy-go v1.27.3
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

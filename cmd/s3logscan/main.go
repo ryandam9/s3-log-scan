@@ -50,9 +50,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "s3logscan %s (commit %s, built %s)\n", version, commit, date)
 		return 0
 	}
-	// Config file: standing defaults (cluster name, pattern, -i, ...)
-	// read from -config or ~/.config/s3logscan/config, applied only to
-	// flags NOT given on the command line — CLI always takes priority.
+	// Config file: standing defaults (cluster name, patterns, -i, ...)
+	// read as YAML from -config or ~/.config/s3logscan/config.yaml,
+	// applied only to flags NOT given on the command line — CLI always
+	// takes priority.
 	cliSet := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { cliSet[f.Name] = true })
 	fileSet := map[string]bool{}

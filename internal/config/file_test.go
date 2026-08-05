@@ -10,7 +10,7 @@ import (
 
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "config")
+	p := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -24,11 +24,11 @@ func TestApplyFileSetsDefaults(t *testing.T) {
 	}
 	p := writeConfig(t, `
 # standing defaults
-cluster-name = hbase-prod
-grep = ERROR|WARN
-i = true
-progress = 2s
-max-total-matches = 20
+cluster-name: hbase-prod
+grep: ERROR|WARN
+i: true
+progress: 2s
+max-total-matches: 20
 `)
 	provided, _, err := ApplyFile(fs, p, nil)
 	if err != nil {
@@ -42,7 +42,7 @@ max-total-matches = 20
 	}
 	for _, k := range []string{"cluster-name", "grep", "i", "progress", "max-total-matches"} {
 		if !provided[k] {
-			t.Errorf("provided missing %q", k)
+			t.Fatalf("%q missing from provided set", k)
 		}
 	}
 }
@@ -54,7 +54,7 @@ func TestApplyFileCLIPriority(t *testing.T) {
 	if err := fs.Parse([]string{"-grep", "FROM_CLI"}); err != nil {
 		t.Fatal(err)
 	}
-	p := writeConfig(t, "grep = FROM_FILE\ncluster-name = hbase-prod\n")
+	p := writeConfig(t, "grep: FROM_FILE\ncluster-name: hbase-prod\n")
 	provided, _, err := ApplyFile(fs, p, func(k string) bool { return k == "grep" })
 	if err != nil {
 		t.Fatal(err)
@@ -70,10 +70,12 @@ func TestApplyFileCLIPriority(t *testing.T) {
 	}
 }
 
+// YAML quoting preserves leading/trailing spaces and shields regexes
+// that start with YAML-special characters.
 func TestApplyFileQuotedValues(t *testing.T) {
 	fs, o := NewFlagSet("test", io.Discard)
 	fs.Parse(nil)
-	p := writeConfig(t, `grep = " ERROR with spaces "`+"\n")
+	p := writeConfig(t, `grep: " ERROR with spaces "`+"\n")
 	if _, _, err := ApplyFile(fs, p, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -82,28 +84,14 @@ func TestApplyFileQuotedValues(t *testing.T) {
 	}
 }
 
-func TestApplyFileDashTolerated(t *testing.T) {
-	fs, o := NewFlagSet("test", io.Discard)
-	fs.Parse(nil)
-	p := writeConfig(t, "-cluster-name = hbase\n")
-	if _, _, err := ApplyFile(fs, p, nil); err != nil {
-		t.Fatal(err)
-	}
-	if o.ClusterName != "hbase" {
-		t.Fatalf("dash-prefixed key not applied: %q", o.ClusterName)
-	}
-}
-
 func TestApplyFileErrors(t *testing.T) {
-	cases := []struct {
-		name, content, want string
-	}{
-		{"unknown option", "no-such-flag = 1\n", "unknown option"},
-		{"missing equals", "just a line\n", "expected 'flag = value'"},
-		{"bad value", "workers = many\n", "workers"},
-		{"reserved config", "config = /elsewhere\n", "cannot be set"},
-		{"reserved version", "version = true\n", "cannot be set"},
-		{"bad quotes", `grep = "unterminated` + "\n", "bad quoted value"},
+	cases := []struct{ name, content, want string }{
+		{"unknown key", "no-such: 1\n", "unknown option"},
+		{"reserved config", "config: /elsewhere\n", "cannot be set"},
+		{"reserved version", "version: true\n", "cannot be set"},
+		{"non-scalar flag value", "grep:\n  - a\n  - b\n", "expected a single scalar value"},
+		{"bad flag value", "workers: heaps\n", "workers"},
+		{"legacy format", "grep = ERROR\n", "cannot unmarshal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,9 +102,6 @@ func TestApplyFileErrors(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want mention of %q", err, tc.want)
 			}
-			if err != nil && !strings.Contains(err.Error(), ":1:") {
-				t.Fatalf("error must carry file:line: %v", err)
-			}
 		})
 	}
 }
@@ -124,21 +109,23 @@ func TestApplyFileErrors(t *testing.T) {
 func TestApplyFileMissing(t *testing.T) {
 	fs, _ := NewFlagSet("test", io.Discard)
 	fs.Parse(nil)
-	if _, _, err := ApplyFile(fs, filepath.Join(t.TempDir(), "absent"), nil); err == nil {
+	if _, _, err := ApplyFile(fs, filepath.Join(t.TempDir(), "absent.yaml"), nil); err == nil {
 		t.Fatal("missing explicit config file must error")
 	}
 }
 
-// pattern.<name> lines are collected as named categories, not flags;
-// repeated names accumulate in order.
+// The patterns mapping defines named categories: a single regex or a
+// list that OR-combines, alongside ordinary flag defaults.
 func TestApplyFilePatterns(t *testing.T) {
 	fs, o := NewFlagSet("test", io.Discard)
 	fs.Parse(nil)
 	p := writeConfig(t, `
-cluster-name = hbase-prod
-pattern.spark = ERROR|Exception
-pattern.spark = Caused by
-pattern.oom = OutOfMemoryError
+cluster-name: hbase-prod
+patterns:
+  spark:
+    - ERROR|Exception
+    - Caused by
+  oom: OutOfMemoryError
 `)
 	_, patterns, err := ApplyFile(fs, p, nil)
 	if err != nil {
@@ -154,9 +141,11 @@ pattern.oom = OutOfMemoryError
 
 func TestApplyFilePatternErrors(t *testing.T) {
 	cases := []struct{ name, content, want string }{
-		{"empty name", "pattern. = x\n", "needs a name"},
-		{"empty value", "pattern.spark = \n", "empty pattern"},
-		{"bad regex", "pattern.spark = (\n", "pattern.spark"},
+		{"empty value", "patterns:\n  spark: \"\"\n", "empty pattern"},
+		{"bad regex", "patterns:\n  spark: (\n", "patterns.spark"},
+		{"bad regex in list", "patterns:\n  spark:\n    - ok\n    - (\n", "patterns.spark"},
+		{"patterns not a mapping", "patterns: just-a-string\n", "expected a mapping"},
+		{"nested mapping", "patterns:\n  spark:\n    deep: x\n", "expected a regex or a list"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,7 +176,35 @@ func TestResolveCategory(t *testing.T) {
 		t.Fatalf("unknown category must list what exists: %v", err)
 	}
 	_, err = ResolveCategory("spark", nil)
-	if err == nil || !strings.Contains(err.Error(), "no pattern.<name> entries") {
+	if err == nil || !strings.Contains(err.Error(), "no patterns") {
 		t.Fatalf("no patterns at all: %v", err)
+	}
+}
+
+// DefaultConfigPath finds config.yaml first, then config.yml.
+func TestDefaultConfigPathYAML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if got := DefaultConfigPath(); got != "" {
+		t.Fatalf("empty home: got %q", got)
+	}
+	dir := filepath.Join(home, ".config", "s3logscan")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yml := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(yml, []byte("i: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultConfigPath(); got != yml {
+		t.Fatalf("got %q want %q", got, yml)
+	}
+	yamlPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(yamlPath, []byte("i: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultConfigPath(); got != yamlPath {
+		t.Fatalf("got %q want %q (yaml preferred over yml)", got, yamlPath)
 	}
 }

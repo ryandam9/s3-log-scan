@@ -46,7 +46,7 @@ reporting, and scripting with exit codes.
 -allow-whole-bucket-scan        explicit opt-in to empty-prefix enumeration
 -key pattern                    object-key filter (client-side; cuts GETs, not LIST work)
 -grep pattern                   content filter; omit for list-only mode (no downloads)
--category name                  named pattern from the config file (pattern.<name> = regex);
+-category name                  named pattern from the config file's patterns mapping;
                                 resolves to -grep so regexes never need typing
 -cat                            no pattern: download and print entire logs line by line
                                 (default without a pattern is listing file names only)
@@ -78,8 +78,8 @@ reporting, and scripting with exit codes.
 -progress duration              status line to stderr every interval, e.g. 2s (0 = off)
 -verbose                        log listing pages and per-object scan starts (stderr)
 -color auto|always|never        colorize results (default auto: only on a terminal)
--config file                    'flag = value' defaults file (default:
-                                ~/.config/s3logscan/config if present); CLI wins
+-config file                    YAML defaults file (default: ~/.config/s3logscan/
+                                config.yaml or .yml if present); CLI wins
 -group                          key-as-heading output (default: on when stdout is a
                                 terminal; -group=false forces classic flat lines)
 ```
@@ -143,16 +143,18 @@ the prefix but downloads only the ones matching the pattern.
 
 Patterns differ by the kind of application being scanned, and long
 regexes are painful to retype and easy to mistype. Define them once in
-the config file — `pattern.<name> = <regex>`, repeated lines for the
-same name OR-combine — and select by name with `-category`:
+the config file's `patterns` mapping — each name a regex or a list of
+regexes that OR-combine — and select by name with `-category`:
 
-```
-# ~/.config/s3logscan/config
-cluster-name = hbase-prod
-pattern.spark = ERROR|Exception
-pattern.spark = Caused by
-pattern.oom   = OutOfMemoryError|Container killed on request|exit code 137
-pattern.hbase = (ERROR|FATAL).*(regionserver|WAL)
+```yaml
+# ~/.config/s3logscan/config.yaml
+cluster-name: hbase-prod
+patterns:
+  spark:
+    - ERROR|Exception
+    - Caused by
+  oom: OutOfMemoryError|Container killed on request|exit code 137
+  hbase: (ERROR|FATAL).*(regionserver|WAL)
 ```
 
 ```
@@ -180,7 +182,7 @@ s3logscan -app-id application_1700000000000_0042        # file names only
 s3logscan -app-id application_1700000000000_0042 -cat   # full log content
 ```
 
-`-cat` works as a config standing default too (`cat = true`): it
+`-cat` works as a config standing default too (`cat: true`): it
 applies to patternless runs and steps aside whenever a pattern is in
 play. Combining an explicit `-cat` with `-grep`/`-category` is a
 usage error.
@@ -233,7 +235,7 @@ s3logscan: completed in 4.2s
 
 `-md` requires `-app-id` (the report is named after the application)
 and `-grep` (it records where a pattern was found). It works from the
-config file too (`md = true`) for always-on reports — as a standing
+config file too (`md: true`) for always-on reports — as a standing
 default it applies only to runs that have both `-app-id` and `-grep`,
 and is silently ignored otherwise, so the same config file still
 serves list-only and cluster-wide scans.
@@ -509,31 +511,38 @@ against bucket-name squatting across accounts.
 
 #### Keep standing defaults in a config file
 
-When the cluster, pattern, and preferences rarely change and only the
-application ID varies, put the constants in
-`~/.config/s3logscan/config` (or any file named with `-config`):
+When the cluster, patterns, and preferences rarely change and only
+the application ID varies, put the constants in
+`~/.config/s3logscan/config.yaml` (or `.yml`, or any file named with
+`-config`):
 
-```
-# ~/.config/s3logscan/config
-cluster-name = hbase-prod
-grep = ERROR
-i = true
-progress = 2s
+```yaml
+# ~/.config/s3logscan/config.yaml
+cluster-name: hbase-prod
+i: true
+progress: 2s
+md: true
+patterns:
+  spark:
+    - ERROR|Exception
+    - Caused by
+  oom: OutOfMemoryError|exit code 137
 ```
 
 Then a scan is just the part that changes:
 
 ```
-s3logscan -app-id application_1700000000000_0042
+s3logscan -app-id application_1700000000000_0042 -category spark
 ```
 
-Rules: one `flag = value` per line (flag names exactly as on the CLI),
-`#` comments and blank lines ignored, values may be double-quoted to
-keep leading/trailing spaces. **Any flag given on the command line
-takes priority over the file** — `s3logscan -key ... -grep FATAL`
-overrides the file's `grep` for that run. Unknown options and invalid
-values fail fast with the file and line number. `config` and `version`
-cannot be set from the file.
+Rules: YAML, with top-level keys named exactly as the CLI flags and a
+`patterns` mapping for the named categories (a regex, or a list of
+regexes that OR-combine; quote a regex if it starts with a
+YAML-special character like `*` or `[`). **Any flag given on the
+command line takes priority over the file** — `s3logscan -grep FATAL`
+overrides the file for that run. Unknown keys and invalid values fail
+fast with the file and line number. `config` and `version` cannot be
+set from the file.
 
 #### Use exit codes in scripts
 

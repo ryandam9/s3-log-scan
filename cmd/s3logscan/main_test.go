@@ -78,7 +78,7 @@ func TestVersionExitsZero(t *testing.T) {
 	}
 }
 
-// The default config path (~/.config/s3logscan/config) is honored,
+// The default config path (~/.config/s3logscan/config.yaml) is honored,
 // proven against an isolated home rather than the developer's real
 // one: the file's bad workers value reaches validation.
 func TestDefaultConfigReadFromHome(t *testing.T) {
@@ -91,7 +91,7 @@ func TestDefaultConfigReadFromHome(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config"), []byte("workers = 0\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("workers: 0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
