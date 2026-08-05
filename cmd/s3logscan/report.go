@@ -4,15 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
 
-// ansiSGR matches the color/style escape sequences the writer emits.
-// The -md capture tees the exact bytes shown on screen, so a colored
-// terminal run must be stripped back to plain text for the report.
-var ansiSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
+// mdMatch is one recorded match line for the -md report, already
+// sanitized. Key is the full s3:// URI so multi-cluster runs stay
+// unambiguous.
+type mdMatch struct {
+	Key    string
+	Entry  string // ZIP entry name, "" otherwise
+	LineNo int64
+	Text   string
+}
 
 // reportPath is where -md writes: ~/logscan/<yyyy-mm-dd>/<app-id>.md,
 // the date directory grouping reports by run day in local time (the
@@ -58,9 +62,10 @@ func mdCodeBlock(content string) string {
 }
 
 // writeMDReport renders and writes the -md Markdown report: the run's
-// header facts, the matched file names, and the screen output exactly
-// as it appeared (ANSI colors stripped).
-func writeMDReport(path, appID, pattern string, scopes, matchedKeys []string, screen string, now time.Time) error {
+// header facts, the matched file names, the matches grouped per file
+// (each file a heading with its lines in one block), and the run
+// summary.
+func writeMDReport(path, appID, pattern string, scopes, matchedKeys []string, matches []mdMatch, runLog string, now time.Time) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# s3logscan — %s\n\n", appID)
 	// Local time, zone spelled out: the report is read on the machine
@@ -75,8 +80,39 @@ func writeMDReport(path, appID, pattern string, scopes, matchedKeys []string, sc
 
 	b.WriteString("## Files with matches\n\n")
 	b.WriteString(mdCodeBlock(strings.Join(matchedKeys, "\n")))
-	b.WriteString("\n## Screen output\n\n")
-	b.WriteString(mdCodeBlock(ansiSGR.ReplaceAllString(screen, "")))
+
+	b.WriteString("\n## Matches\n\n")
+	if len(matches) == 0 {
+		b.WriteString(mdCodeBlock(""))
+		b.WriteString("\n")
+	} else {
+		// One section per file, in the order files first produced a
+		// match; each file's lines keep their emission order.
+		byKey := make(map[string][]mdMatch)
+		var order []string
+		for _, m := range matches {
+			if _, seen := byKey[m.Key]; !seen {
+				order = append(order, m.Key)
+			}
+			byKey[m.Key] = append(byKey[m.Key], m)
+		}
+		for _, key := range order {
+			fmt.Fprintf(&b, "### %s\n\n", key)
+			var lines strings.Builder
+			for _, m := range byKey[key] {
+				if m.Entry != "" {
+					fmt.Fprintf(&lines, "%s:%d: %s\n", m.Entry, m.LineNo, m.Text)
+				} else {
+					fmt.Fprintf(&lines, "%6d: %s\n", m.LineNo, m.Text)
+				}
+			}
+			b.WriteString(mdCodeBlock(lines.String()))
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("## Run summary\n\n")
+	b.WriteString(mdCodeBlock(runLog))
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating report directory: %w", err)

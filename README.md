@@ -72,7 +72,7 @@ reporting, and scripting with exit codes.
 -expected-bucket-owner id       cross-account safety check
 -sanitize-output bool           default true
 -md                             write a Markdown report to ~/logscan/<yyyy-mm-dd>/<app-id>.md:
-                                matched file names + the screen output (needs -app-id, -grep)
+                                matched file names + matches grouped per file (needs -app-id, -grep)
 -max-warnings N                 default 100
 -region string                  AWS region override
 -progress duration              status line to stderr every interval, e.g. 2s (0 = off)
@@ -191,12 +191,12 @@ usage error.
 s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep 'ERROR' -md
 ```
 
-`-md` writes `~/logscan/<yyyy-mm-dd>/<app-id>.md` when the run ends — reports group by run day, dated in local time — (interrupted
-runs included), alongside the normal screen output. The Generated
-timestamp is in the machine's local time zone. The report has two
-`sh`-fenced sections: the names of the files where the pattern was
-found, and the screen output exactly as it appeared (ANSI colors
-stripped, summary included):
+`-md` writes `~/logscan/<yyyy-mm-dd>/<app-id>.md` when the run ends
+(interrupted runs included) — reports group by run day, dated in local
+time, and the Generated timestamp is local too. The report separates
+matches per file: each matched file gets its own heading with only its
+lines beneath it, regardless of whether the screen used grouped or flat
+format, followed by the run summary:
 
 ````markdown
 # s3logscan — application_1700000000000_0042
@@ -212,12 +212,19 @@ stripped, summary included):
 s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/container_01_000001/stderr.gz
 ```
 
-## Screen output
+## Matches
+
+### s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/container_01_000001/stderr.gz
+
+```sh
+      44: 26/07/20 09:14:02 ERROR Client: User class threw exception
+     812: org.apache.spark.sql.AnalysisException: Table or view not found
+```
+
+## Run summary
 
 ```sh
 s3logscan: scanning s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/
-s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/container_01_000001/stderr.gz
-      44: 26/07/20 09:14:02 ERROR Client: User class threw exception
 ---
 s3logscan: completed in 4.2s
   ...

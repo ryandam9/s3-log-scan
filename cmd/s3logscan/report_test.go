@@ -24,20 +24,19 @@ func TestFenceFor(t *testing.T) {
 
 func TestWriteMDReport(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "logscan", "application_1_2.md")
-	matched := []string{
-		"s3://b/logs/j-1/containers/application_1_2/c_01/stderr.gz",
-		"s3://b/logs/j-1/containers/application_1_2/c_02/stderr.gz",
+	key1 := "s3://b/logs/j-1/containers/application_1_2/c_01/stderr.gz"
+	key2 := "s3://b/logs/j-1/containers/application_1_2/c_02/stderr.gz"
+	matches := []mdMatch{
+		{Key: key1, LineNo: 44, Text: "line with ERROR text"},
+		{Key: key2, LineNo: 7, Text: "another ERROR"},
+		{Key: key1, LineNo: 812, Text: "Caused by: something"},
+		{Key: key2, Entry: "inner.log", LineNo: 3, Text: "zip ERROR"},
 	}
-	// Screen output as a colored terminal run captures it: ANSI SGR
-	// sequences must not survive into the report.
-	screen := "s3logscan: scanning s3://b/logs/j-1/containers/application_1_2/\n" +
-		"\x1b[35ms3://b/logs/j-1/containers/application_1_2/c_01/stderr.gz\x1b[0m\n" +
-		"      44: line with \x1b[1;31mERROR\x1b[0m text\n" +
-		"---\ns3logscan: completed in 1.0s\n"
+	runLog := "s3logscan: scanning s3://b/logs/j-1/containers/application_1_2/\n---\ns3logscan: completed in 1.0s\n"
 	// A non-UTC zone proves the timestamp renders in the local zone it
 	// was produced in (main passes time.Now()), not converted to UTC.
 	now := time.Date(2026, 8, 4, 20, 30, 0, 0, time.FixedZone("AEST", 10*3600))
-	if err := writeMDReport(path, "application_1_2", "ERROR", []string{"s3://b/logs/j-1/containers/application_1_2/"}, matched, screen, now); err != nil {
+	if err := writeMDReport(path, "application_1_2", "ERROR", []string{"s3://b/logs/j-1/containers/application_1_2/"}, []string{key1, key2}, matches, runLog, now); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -52,23 +51,27 @@ func TestWriteMDReport(t *testing.T) {
 		"- **Scanned**: `s3://b/logs/j-1/containers/application_1_2/`",
 		"- **Files with matches**: 2",
 		"## Files with matches",
-		"```sh\ns3://b/logs/j-1/containers/application_1_2/c_01/stderr.gz\ns3://b/logs/j-1/containers/application_1_2/c_02/stderr.gz\n```",
-		"## Screen output",
-		"      44: line with ERROR text",
+		"## Matches",
+		// Each file is its own section: heading, then only its lines.
+		"### " + key1 + "\n\n```sh\n    44: line with ERROR text\n   812: Caused by: something\n```",
+		"### " + key2 + "\n\n```sh\n     7: another ERROR\ninner.log:3: zip ERROR\n```",
+		"## Run summary",
+		"s3logscan: completed in 1.0s",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report missing %q\n---\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "\x1b[") {
-		t.Error("report contains unstripped ANSI escape sequences")
+	// Files appear in first-match order, interleaving undone.
+	if strings.Index(got, "### "+key1) > strings.Index(got, "### "+key2) {
+		t.Error("file sections out of first-match order")
 	}
 }
 
 // A run with no matches still writes a well-formed report.
 func TestWriteMDReportNoMatches(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "application_9_9.md")
-	err := writeMDReport(path, "application_9_9", "FATAL", []string{"s3://b/p/"}, nil,
+	err := writeMDReport(path, "application_9_9", "FATAL", []string{"s3://b/p/"}, nil, nil,
 		"s3logscan: scanning s3://b/p/\n", time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
@@ -78,20 +81,20 @@ func TestWriteMDReportNoMatches(t *testing.T) {
 	if !strings.Contains(got, "- **Files with matches**: 0") {
 		t.Errorf("missing zero count:\n%s", got)
 	}
-	if !strings.Contains(got, "```sh\n(none)\n```") {
-		t.Errorf("missing (none) placeholder:\n%s", got)
+	if strings.Count(got, "```sh\n(none)\n```") != 2 {
+		t.Errorf("files and matches sections must both show (none):\n%s", got)
 	}
 }
 
 // Log content containing a ``` run must not close the fence early.
 func TestWriteMDReportFenceEscaping(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "application_3_3.md")
-	screen := "s3://b/k:1: evil line with ``` fence\n"
-	if err := writeMDReport(path, "application_3_3", "fence", []string{"s3://b/p/"}, []string{"s3://b/k"}, screen, time.Unix(0, 0)); err != nil {
+	matches := []mdMatch{{Key: "s3://b/k", LineNo: 1, Text: "evil line with ``` fence"}}
+	if err := writeMDReport(path, "application_3_3", "fence", []string{"s3://b/p/"}, []string{"s3://b/k"}, matches, "log\n", time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), "````sh\ns3://b/k:1: evil line with ``` fence\n````") {
+	if !strings.Contains(string(data), "````sh\n     1: evil line with ``` fence\n````") {
 		t.Errorf("fence not widened:\n%s", string(data))
 	}
 }

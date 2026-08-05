@@ -186,15 +186,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// -md: tee the bytes shown on screen into a buffer and collect the
-	// matched keys, then render ~/logscan/<app-id>.md when the run ends
-	// (interrupted runs included — found matches are never lost).
-	var mdBuf bytes.Buffer
+	// -md: record every match structurally (RecordMatch below) plus the
+	// scope echoes and per-scope summaries, then render the report when
+	// the run ends (interrupted runs included — found matches are never
+	// lost). Matches are grouped per file in the report, independent of
+	// whether the screen used grouped or flat format.
+	var mdBuf bytes.Buffer // scope echoes + summaries
 	var mdScopes, mdMatched []string
-	engineOut := io.Writer(stdout)
-	if opts.MDReport {
-		engineOut = io.MultiWriter(stdout, &mdBuf)
-	}
+	var mdMatches []mdMatch
 	writeReport := func() (failed bool) {
 		if !opts.MDReport {
 			return false
@@ -208,7 +207,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		now := time.Now()
 		path, err := reportPath(opts.AppID, now)
 		if err == nil {
-			err = writeMDReport(path, opts.AppID, patternDisplay, mdScopes, mdMatched, mdBuf.String(), now)
+			err = writeMDReport(path, opts.AppID, patternDisplay, mdScopes, mdMatched, mdMatches, mdBuf.String(), now)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "s3logscan: %v\n", err)
@@ -254,10 +253,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 			scope := fmt.Sprintf("s3://%s/%s", runCfg.Bucket, runCfg.Prefix)
 			mdScopes = append(mdScopes, scope)
 			fmt.Fprintf(&mdBuf, "s3logscan: scanning %s\n", scope)
+			// Called from the writer goroutine; engine.Run returns only
+			// after the writer is closed, so reading mdMatches after
+			// each run is safe. Sanitization matches what was printed.
+			sanitize, bucket := runCfg.SanitizeOutput, runCfg.Bucket
+			runCfg.RecordMatch = func(r scan.Result) {
+				key, entry, text := r.Key, r.ZipEntry, string(r.Line)
+				if sanitize {
+					key, entry, text = scan.SanitizeString(key), scan.SanitizeString(entry), scan.SanitizeString(text)
+				}
+				mdMatches = append(mdMatches, mdMatch{Key: "s3://" + bucket + "/" + key, Entry: entry, LineNo: r.LineNo, Text: text})
+			}
 		}
 
 		engine := scan.NewEngine(&runCfg, newS3Client(scopeAWS), stderr)
-		result := engine.Run(ctx, engineOut)
+		result := engine.Run(ctx, stdout)
 
 		engine.Warner().Flush()
 		if result.ListingErr != nil {

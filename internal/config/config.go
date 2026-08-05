@@ -93,8 +93,8 @@ Examples:
   listed and downloaded — no key search across the cluster's logs):
     s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep ERROR
 
-  Same scan, also saved as a Markdown report (matched file names plus
-  the screen output) to ~/logscan/<yyyy-mm-dd>/application_1700000000000_0042.md:
+  Same scan, also saved as a Markdown report (matched file names, then
+  matches grouped per file) under ~/logscan/<yyyy-mm-dd>/:
     s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep ERROR -md
 
   Patterns you use often can be named in the config file
@@ -187,7 +187,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.StringVar(&o.RequestPayer, "request-payer", "", `set to "requester" for requester-pays buckets`)
 	fs.StringVar(&o.ExpectedBucketOwner, "expected-bucket-owner", "", "account ID the bucket must belong to (cross-account safety)")
 	fs.BoolVar(&o.SanitizeOutput, "sanitize-output", true, "replace control characters in output")
-	fs.BoolVar(&o.MDReport, "md", false, "write a Markdown report to ~/logscan/<yyyy-mm-dd>/<app-id>.md: the matched file names plus the screen output (requires -app-id and -grep)")
+	fs.BoolVar(&o.MDReport, "md", false, "write a Markdown report to ~/logscan/<yyyy-mm-dd>/<app-id>.md: matched file names, matches grouped per file, and the run summary (requires -app-id and -grep)")
 	fs.IntVar(&o.MaxWarnings, "max-warnings", 100, "stderr warning cap (0 = unlimited)")
 	fs.StringVar(&o.Region, "region", "", "AWS region override")
 	fs.DurationVar(&o.Progress, "progress", 0, "print a status line to stderr every interval, e.g. 2s (0 = off)")
