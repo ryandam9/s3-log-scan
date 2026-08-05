@@ -45,6 +45,7 @@ var errZipExpandBudget = errors.New("zip expansion budget exceeded")
 // ScanOptions carries the per-object scanning configuration.
 type ScanOptions struct {
 	Grep         *Matcher
+	CatMode      bool  // -cat: Grep matches every line; no highlighting
 	MaxMatches   int64 // per object; whole ZIP = one object (M-04). 0 = unlimited
 	MaxLineSize  int
 	NamesOnly    bool // -l: first-hit exit

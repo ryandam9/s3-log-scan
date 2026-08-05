@@ -42,6 +42,8 @@ type Options struct {
 
 	KeyPattern  string
 	GrepPattern string
+	Category    string
+	Cat         bool
 	FixedString bool
 	IgnoreCase  bool
 
@@ -95,6 +97,15 @@ Examples:
   the screen output) to ~/logscan/application_1700000000000_0042.md:
     s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep ERROR -md
 
+  Patterns you use often can be named in the config file
+  (pattern.<name> = <regex>) and picked by name — no regex typing:
+    s3logscan -app-id application_1700000000000_0042 -category spark
+
+  No pattern at all: list the application's files (the default), or
+  download and print the entire logs with -cat:
+    s3logscan -app-id application_1700000000000_0042
+    s3logscan -app-id application_1700000000000_0042 -cat
+
   Discover which application logged an error (step logs first):
     s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ \
         -grep 'Table or view not found' -F -l -discover-apps -smallest-first
@@ -114,12 +125,16 @@ Examples:
 Config file:
   Standing defaults are read from ~/.config/s3logscan/config (override
   the path with -config FILE). One "flag = value" per line, # comments
-  allowed; any flag given on the command line takes priority. Example:
+  allowed; any flag given on the command line takes priority. Lines of
+  the form "pattern.<name> = <regex>" define the named categories that
+  -category picks from; repeated lines for one name OR-combine. Example:
       cluster-name = hbase-prod
-      grep = ERROR
       i = true
       progress = 2s
-  With that in place, a scan is just:  s3logscan -app-id application_..._0042
+      pattern.spark = ERROR|Exception|Caused by
+      pattern.oom = OutOfMemoryError|exit code 137
+  With that in place, a scan is just:
+      s3logscan -app-id application_..._0042 -category spark
 
 Exit codes:
   0 matched; 1 no matches; 2 usage/credential/listing failure;
@@ -148,6 +163,8 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.BoolVar(&o.AllowWholeBucketScan, "allow-whole-bucket-scan", false, "explicit opt-in to empty-prefix enumeration of the whole bucket")
 	fs.StringVar(&o.KeyPattern, "key", "", "object-key filter (client-side; cuts GETs, not LIST work)")
 	fs.StringVar(&o.GrepPattern, "grep", "", "content filter; omit for list-only mode (no downloads)")
+	fs.StringVar(&o.Category, "category", "", "named pattern from the config file (pattern.<name> = <regex>); resolves to -grep so the regex never needs typing")
+	fs.BoolVar(&o.Cat, "cat", false, "no pattern: download and print entire logs line by line (default without -grep/-category is listing file names only)")
 	fs.BoolVar(&o.FixedString, "F", false, "-key/-grep are fixed strings, not regex")
 	fs.BoolVar(&o.IgnoreCase, "i", false, "case-insensitive matching")
 	fs.StringVar(&o.ExtList, "ext", "", "comma-separated extension allow-list, e.g. .gz,.log (case-insensitive)")
@@ -199,12 +216,19 @@ func (o *Options) Build() (*scan.Config, error) {
 			return nil, fmt.Errorf("-app-id needs the cluster's log directory to build .../containers/%s/; pass -cluster-name/-cluster-id, or a -prefix that points at it", o.AppID)
 		}
 	}
+	// By Build time -category has been resolved into GrepPattern (main
+	// owns that, since the named patterns live in the config file), so
+	// -cat conflicting with either shows up as a conflict with the
+	// resolved pattern.
+	if o.Cat && o.GrepPattern != "" {
+		return nil, fmt.Errorf("-cat prints entire logs; it cannot be combined with -grep or -category")
+	}
 	if o.MDReport {
 		if o.AppID == "" {
 			return nil, fmt.Errorf("-md requires -app-id (the report file is named ~/logscan/<app-id>.md)")
 		}
 		if o.GrepPattern == "" {
-			return nil, fmt.Errorf("-md requires -grep (the report records where a search pattern was found)")
+			return nil, fmt.Errorf("-md requires -grep or -category (the report records where a search pattern was found)")
 		}
 	}
 	if o.Bucket == "" && !cluster {
@@ -227,11 +251,11 @@ func (o *Options) Build() (*scan.Config, error) {
 	if o.MaxSizeMiB < 0 || o.MaxUncompressedMiB < 0 || o.MaxMatches < 0 || o.MaxTotalMatches < 0 || o.MaxWarnings < 0 {
 		return nil, fmt.Errorf("size, match, and warning limits must be >= 0")
 	}
-	if o.MaxTotalMatches > 0 && o.GrepPattern == "" {
-		return nil, fmt.Errorf("-max-total-matches requires -grep")
+	if o.MaxTotalMatches > 0 && o.GrepPattern == "" && !o.Cat {
+		return nil, fmt.Errorf("-max-total-matches requires -grep, -category, or -cat")
 	}
-	if o.Group && o.GrepPattern == "" {
-		return nil, fmt.Errorf("-group requires -grep (list-only output is already one key per line)")
+	if o.Group && o.GrepPattern == "" && !o.Cat {
+		return nil, fmt.Errorf("-group requires -grep, -category, or -cat (list-only output is already one key per line)")
 	}
 	if o.Group && o.NamesOnly {
 		return nil, fmt.Errorf("-group cannot be combined with -l (names-only output is already one key per line)")
@@ -270,7 +294,7 @@ func (o *Options) Build() (*scan.Config, error) {
 	cfg := &scan.Config{
 		Bucket:              o.Bucket,
 		Prefix:              o.Prefix,
-		ListOnly:            o.GrepPattern == "",
+		ListOnly:            o.GrepPattern == "" && !o.Cat,
 		SmallestFirst:       o.SmallestFirst,
 		SmallestFirstWindow: o.SmallestFirstWindow,
 		Workers:             o.Workers,
@@ -302,6 +326,18 @@ func (o *Options) Build() (*scan.Config, error) {
 			return nil, fmt.Errorf("-grep: %w", err)
 		}
 		cfg.Scan.Grep = m
+	}
+	if o.Cat {
+		// Full-log dump: an empty regex matches every line, so the
+		// entire scan pipeline (workers, budgets, grouping, counters)
+		// applies unchanged. CatMode suppresses match highlighting —
+		// there is no pattern to highlight.
+		m, err := scan.NewMatcher("", false, false)
+		if err != nil {
+			return nil, fmt.Errorf("-cat: %w", err)
+		}
+		cfg.Scan.Grep = m
+		cfg.Scan.CatMode = true
 	}
 	if o.NamesOnly && cfg.ListOnly {
 		return nil, fmt.Errorf("-l requires -grep (names of objects with content matches)")

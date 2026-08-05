@@ -469,3 +469,34 @@ func TestEngineMatchedKeysOffByDefault(t *testing.T) {
 		t.Fatalf("MatchedKeys = %v, want nil", res.MatchedKeys)
 	}
 }
+
+// -cat: the match-everything scan prints every line of every object,
+// with no highlighting even when color is on.
+func TestEngineCatMode(t *testing.T) {
+	f := newFakeS3(1000)
+	f.put("logs/a.log", "first line\nsecond line\n")
+	f.put("logs/b.log", "only line\n")
+	cfg := testConfig(t, "")
+	cfg.ListOnly = false
+	m, err := NewMatcher("", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Scan.Grep = m
+	cfg.Scan.CatMode = true
+	cfg.ColorOutput = true // would highlight if a matcher reached the writer
+	res, out, _ := runEngine(t, cfg, f)
+	// Key and line-number coloring still apply; only the line text
+	// matters here, and it must be present and unhighlighted.
+	for _, want := range []string{" first line\n", " second line\n", " only line\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, ansiMatch) {
+		t.Error("cat mode must not highlight")
+	}
+	if got := res.Counters.MatchedLines.Load(); got != 3 {
+		t.Fatalf("matched lines %d want 3", got)
+	}
+}
