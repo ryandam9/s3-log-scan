@@ -95,3 +95,19 @@ func TestWriteMDReportFenceEscaping(t *testing.T) {
 		t.Errorf("fence not widened:\n%s", string(data))
 	}
 }
+
+// Reports group under a local-date directory: ~/logscan/<yyyy-mm-dd>/.
+func TestReportPathDateDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	now := time.Date(2026, 8, 5, 23, 30, 0, 0, time.FixedZone("AEST", 10*3600))
+	got, err := reportPath("application_1_2", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "logscan", "2026-08-05", "application_1_2.md")
+	if got != want {
+		t.Fatalf("reportPath = %q, want %q", got, want)
+	}
+}
