@@ -192,7 +192,8 @@ s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep 
 ```
 
 `-md` writes `~/logscan/<app-id>.md` when the run ends (interrupted
-runs included), alongside the normal screen output. The report has two
+runs included), alongside the normal screen output. The Generated
+timestamp is in the machine's local time zone. The report has two
 `sh`-fenced sections: the names of the files where the pattern was
 found, and the screen output exactly as it appeared (ANSI colors
 stripped, summary included):
@@ -200,7 +201,7 @@ stripped, summary included):
 ````markdown
 # s3logscan — application_1700000000000_0042
 
-- **Generated**: 2026-08-04 10:30:00 UTC
+- **Generated**: 2026-08-04 20:30:00 AEST
 - **Pattern**: `ERROR`
 - **Scanned**: `s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/`
 - **Files with matches**: 1
