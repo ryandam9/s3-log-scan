@@ -500,3 +500,41 @@ func TestEngineCatMode(t *testing.T) {
 		t.Fatalf("matched lines %d want 3", got)
 	}
 }
+
+// RecordMatch observes every content match once, in emission order,
+// with line numbers and retained line text — in flat and grouped mode
+// alike (grouping is a rendering concern; recording precedes it).
+func TestEngineRecordMatch(t *testing.T) {
+	for _, grouped := range []bool{false, true} {
+		name := "flat"
+		if grouped {
+			name = "grouped"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFakeS3(1000)
+			f.put("logs/a.log", "ERROR one\nquiet\nERROR two\n")
+			f.put("logs/b.log", "ERROR three\n")
+			cfg := testConfig(t, "ERROR")
+			cfg.GroupOutput = grouped
+			var got []Result
+			cfg.RecordMatch = func(r Result) { got = append(got, r) }
+			res, _, _ := runEngine(t, cfg, f)
+			if res.Counters.MatchedLines.Load() != 3 || len(got) != 3 {
+				t.Fatalf("recorded %d matches, counters say %d", len(got), res.Counters.MatchedLines.Load())
+			}
+			byKey := map[string][]string{}
+			for _, r := range got {
+				if r.KeyOnly || r.GroupEnd {
+					t.Fatalf("recorded a non-content result: %+v", r)
+				}
+				byKey[r.Key] = append(byKey[r.Key], fmt.Sprintf("%d:%s", r.LineNo, r.Line))
+			}
+			if a := byKey["logs/a.log"]; len(a) != 2 || a[0] != "1:ERROR one" || a[1] != "3:ERROR two" {
+				t.Fatalf("a.log matches: %v", a)
+			}
+			if b := byKey["logs/b.log"]; len(b) != 1 || b[0] != "1:ERROR three" {
+				t.Fatalf("b.log matches: %v", b)
+			}
+		})
+	}
+}

@@ -31,6 +31,12 @@ type WriterConfig struct {
 	Color      bool
 	Group      bool     // print each object key once as a heading
 	Grep       *Matcher // for highlight spans; nil = no highlighting
+	// Record observes every content match exactly once, in emission
+	// order, from the writer goroutine (the -md report rebuilds its
+	// own per-file structure from these instead of parsing rendered
+	// output). Line bytes are safe to retain: workers copy each line
+	// before emitting.
+	Record func(Result)
 }
 
 // groupFlushBytes caps how much of one object's output is buffered in
@@ -62,6 +68,7 @@ type Writer struct {
 	color    bool
 	group    bool
 	grep     *Matcher
+	record   func(Result)
 
 	groups       map[string]*groupBuf
 	groupPrinted bool // a group heading has been printed (separator state)
@@ -83,6 +90,7 @@ func NewWriter(out io.Writer, cfg WriterConfig, cancel context.CancelFunc) *Writ
 		color:    cfg.Color,
 		group:    cfg.Group,
 		grep:     cfg.Grep,
+		record:   cfg.Record,
 		groups:   make(map[string]*groupBuf),
 		done:     make(chan struct{}),
 	}
@@ -163,6 +171,9 @@ func (w *Writer) run() {
 }
 
 func (w *Writer) write(r Result) error {
+	if w.record != nil && !r.KeyOnly && !r.GroupEnd {
+		w.record(r)
+	}
 	if w.group && !r.KeyOnly {
 		if r.GroupEnd {
 			return w.flushGroup(r.Key)

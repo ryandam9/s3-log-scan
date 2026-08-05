@@ -62,6 +62,11 @@ type Config struct {
 	// the list, not just the count). Off by default: matched keys are
 	// unbounded in principle, so only report runs pay for the slice.
 	CollectMatchedKeys bool
+
+	// RecordMatch, when set, observes every content match in emission
+	// order (called from the writer goroutine; safe to read after Run
+	// returns). The -md report uses it to rebuild matches per file.
+	RecordMatch func(Result)
 }
 
 // RunResult is what the engine hands back to main for exit-code and
@@ -140,6 +145,7 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 		Color:      e.cfg.ColorOutput,
 		Group:      e.cfg.GroupOutput,
 		Grep:       highlight,
+		Record:     e.cfg.RecordMatch,
 	}, cancel)
 
 	work := make(chan ObjectDescriptor, e.cfg.Workers*2)
