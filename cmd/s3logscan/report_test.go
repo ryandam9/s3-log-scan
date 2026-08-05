@@ -34,7 +34,9 @@ func TestWriteMDReport(t *testing.T) {
 		"\x1b[35ms3://b/logs/j-1/containers/application_1_2/c_01/stderr.gz\x1b[0m\n" +
 		"      44: line with \x1b[1;31mERROR\x1b[0m text\n" +
 		"---\ns3logscan: completed in 1.0s\n"
-	now := time.Date(2026, 8, 4, 10, 30, 0, 0, time.UTC)
+	// A non-UTC zone proves the timestamp renders in the local zone it
+	// was produced in (main passes time.Now()), not converted to UTC.
+	now := time.Date(2026, 8, 4, 20, 30, 0, 0, time.FixedZone("AEST", 10*3600))
 	if err := writeMDReport(path, "application_1_2", "ERROR", []string{"s3://b/logs/j-1/containers/application_1_2/"}, matched, screen, now); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +47,7 @@ func TestWriteMDReport(t *testing.T) {
 	got := string(data)
 	for _, want := range []string{
 		"# s3logscan — application_1_2",
-		"- **Generated**: 2026-08-04 10:30:00 UTC",
+		"- **Generated**: 2026-08-04 20:30:00 AEST",
 		"- **Pattern**: `ERROR`",
 		"- **Scanned**: `s3://b/logs/j-1/containers/application_1_2/`",
 		"- **Files with matches**: 2",
