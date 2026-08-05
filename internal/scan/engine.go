@@ -128,12 +128,18 @@ func (e *Engine) Run(externalCtx context.Context, stdout io.Writer) *RunResult {
 	// The run-wide match cap must be wired before any worker starts.
 	e.cfg.Scan.limiter = newMatchLimiter(e.cfg.MaxTotalMatches)
 
+	// -cat's match-everything pattern would "highlight" at every byte
+	// position; the writer gets no matcher so lines print untouched.
+	highlight := e.cfg.Scan.Grep
+	if e.cfg.Scan.CatMode {
+		highlight = nil
+	}
 	writer := NewWriter(stdout, WriterConfig{
 		QueueDepth: e.cfg.Workers * 8,
 		Sanitize:   e.cfg.SanitizeOutput,
 		Color:      e.cfg.ColorOutput,
 		Group:      e.cfg.GroupOutput,
-		Grep:       e.cfg.Scan.Grep,
+		Grep:       highlight,
 	}, cancel)
 
 	work := make(chan ObjectDescriptor, e.cfg.Workers*2)

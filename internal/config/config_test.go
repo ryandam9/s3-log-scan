@@ -179,3 +179,32 @@ func TestZeroMeansUnlimited(t *testing.T) {
 		t.Fatalf("zero must mean unlimited: %d %d", cfg.Filters.MaxSize, cfg.Scan.MaxMatches)
 	}
 }
+
+// -cat turns a patternless run into a full-content dump: not
+// list-only, a match-everything matcher, highlighting suppressed.
+func TestCatMode(t *testing.T) {
+	o, _ := parse(t, "-bucket", "b", "-prefix", "p", "-cat")
+	cfg, err := o.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListOnly || cfg.Scan.Grep == nil || !cfg.Scan.CatMode {
+		t.Fatalf("listOnly=%v grep=%v catMode=%v", cfg.ListOnly, cfg.Scan.Grep, cfg.Scan.CatMode)
+	}
+	if !cfg.Scan.Grep.Match([]byte("anything at all")) || !cfg.Scan.Grep.Match([]byte("")) {
+		t.Fatal("-cat matcher must match every line, empty included")
+	}
+	// Budgets and grouping that require "a content scan" accept -cat.
+	if err := build(t, "-bucket", "b", "-prefix", "p", "-cat", "-max-total-matches", "100", "-group"); err != nil {
+		t.Fatalf("-cat with caps and grouping: %v", err)
+	}
+}
+
+func TestCatConflicts(t *testing.T) {
+	if err := build(t, "-bucket", "b", "-prefix", "p", "-cat", "-grep", "x"); err == nil || !strings.Contains(err.Error(), "-cat prints entire logs") {
+		t.Fatalf("-cat with -grep: %v", err)
+	}
+	if err := build(t, "-cluster-name", "h", "-app-id", "application_1_2", "-cat", "-md"); err == nil || !strings.Contains(err.Error(), "-md requires -grep or -category") {
+		t.Fatalf("-md with -cat: %v", err)
+	}
+}

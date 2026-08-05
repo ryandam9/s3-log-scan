@@ -56,17 +56,55 @@ func run(args []string, stdout, stderr io.Writer) int {
 	cliSet := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { cliSet[f.Name] = true })
 	fileSet := map[string]bool{}
+	var filePatterns map[string][]string
 	cfgFile := opts.ConfigFile
 	if cfgFile == "" {
 		cfgFile = config.DefaultConfigPath() // "" when absent: optional
 	}
 	if cfgFile != "" {
 		var err error
-		fileSet, err = config.ApplyFile(fs, cfgFile, func(k string) bool { return cliSet[k] })
+		fileSet, filePatterns, err = config.ApplyFile(fs, cfgFile, func(k string) bool { return cliSet[k] })
 		if err != nil {
 			fmt.Fprintf(stderr, "s3logscan: %v\n", err)
 			return 2
 		}
+	}
+
+	// -category names a config-file pattern (pattern.<name> = <regex>)
+	// and resolves it into -grep. Priority mirrors the flag rules: both
+	// given on the command line is a contradiction; between sources the
+	// command line wins; a config file supplying both grep and category
+	// as standing defaults is ambiguous and fails fast.
+	if opts.Category != "" {
+		switch {
+		case cliSet["category"] && cliSet["grep"]:
+			fmt.Fprintf(stderr, "s3logscan: -category and -grep are mutually exclusive (the category resolves to a pattern)\n")
+			return 2
+		case !cliSet["category"] && cliSet["grep"]:
+			opts.Category = "" // CLI -grep beats a file-provided category default
+		case !cliSet["category"] && fileSet["grep"]:
+			fmt.Fprintf(stderr, "s3logscan: the config file sets both grep and category; keep one standing default\n")
+			return 2
+		}
+	}
+	if opts.Category != "" {
+		if opts.FixedString {
+			fmt.Fprintf(stderr, "s3logscan: -F cannot be combined with -category (config-file patterns are always regular expressions)\n")
+			return 2
+		}
+		pattern, err := config.ResolveCategory(opts.Category, filePatterns)
+		if err != nil {
+			fmt.Fprintf(stderr, "s3logscan: %v\n", err)
+			return 2
+		}
+		opts.GrepPattern = pattern
+	}
+
+	// A file-provided "cat = true" is a standing default like md: it
+	// applies when no pattern narrows the content and is ignored when
+	// one is in play. An explicit -cat keeps strict validation.
+	if opts.Cat && !cliSet["cat"] && fileSet["cat"] && opts.GrepPattern != "" {
+		opts.Cat = false
 	}
 
 	// "md = true" in the config file is a standing default, not a
@@ -83,7 +121,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// grouping is applicable). Piped/redirected output keeps the
 	// stable single-line format.
 	groupSet := cliSet["group"] || fileSet["group"]
-	opts.Group = resolveGroup(groupSet, opts.Group, opts.GrepPattern != "", opts.NamesOnly, isTerminal(stdout))
+	opts.Group = resolveGroup(groupSet, opts.Group, opts.GrepPattern != "" || opts.Cat, opts.NamesOnly, isTerminal(stdout))
 
 	cfg, err := opts.Build()
 	if err != nil {
@@ -161,9 +199,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if !opts.MDReport {
 			return false
 		}
+		patternDisplay := opts.GrepPattern
+		if opts.Category != "" {
+			patternDisplay = opts.Category + " → " + opts.GrepPattern
+		}
 		path, err := reportPath(opts.AppID)
 		if err == nil {
-			err = writeMDReport(path, opts.AppID, opts.GrepPattern, mdScopes, mdMatched, mdBuf.String(), time.Now())
+			err = writeMDReport(path, opts.AppID, patternDisplay, mdScopes, mdMatched, mdBuf.String(), time.Now())
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "s3logscan: %v\n", err)

@@ -97,3 +97,77 @@ func TestConfigFileMDExplicitCLIStaysStrict(t *testing.T) {
 		t.Fatalf("exit %d stderr %q", code, stderr.String())
 	}
 }
+
+// -category resolves a pattern.<name> entry into the grep pattern; a
+// bad regex would fail at -grep, so reaching the workers error proves
+// resolution succeeded.
+func TestCategoryResolvesFromConfig(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR|Exception\nworkers = 0\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p, "-category", "spark"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
+		t.Fatalf("exit %d stderr %q", code, stderr.String())
+	}
+}
+
+// Push-back 1: an unknown category is a fail-fast error naming what
+// the file defines — never a silent fallback to an unfiltered scan.
+func TestCategoryUnknownFailsFast(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR\npattern.oom = OOM\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p, "-category", "sprk"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "available: oom, spark") {
+		t.Fatalf("exit %d stderr %q", code, stderr.String())
+	}
+}
+
+func TestCategoryGrepMutuallyExclusive(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p, "-category", "spark", "-grep", "x"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Fatalf("exit %d stderr %q", code, stderr.String())
+	}
+}
+
+// A CLI -grep beats a file-provided category standing default; the
+// file category names a bad regex, so reaching the workers error
+// proves the category was dropped, not resolved.
+func TestCategoryFileDefaultLosesToCLIGrep(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ncategory = spark\npattern.spark = ERROR\nworkers = 0\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p, "-grep", "FATAL"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
+		t.Fatalf("exit %d stderr %q", code, stderr.String())
+	}
+}
+
+// Two standing defaults naming both grep and category is ambiguous.
+func TestCategoryAndGrepBothFromFileFails(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ngrep = ERROR\ncategory = spark\npattern.spark = X\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "both grep and category") {
+		t.Fatalf("exit %d stderr %q", code, stderr.String())
+	}
+}
+
+func TestCategoryRejectsFixedString(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\npattern.spark = ERROR\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p, "-category", "spark", "-F"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "-F cannot be combined with -category") {
+		t.Fatalf("exit %d stderr %q", code, stderr.String())
+	}
+}
+
+// "cat = true" as a standing default applies only to patternless
+// runs: with a category in play it is dropped instead of conflicting.
+func TestConfigFileCatSoftDefault(t *testing.T) {
+	p := writeTempConfig(t, "bucket = b\nprefix = logs/\ncat = true\npattern.spark = ERROR\nworkers = 0\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-config", p, "-category", "spark"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "-workers") {
+		t.Fatalf("file-provided cat must yield to a pattern: exit %d stderr %q", code, stderr.String())
+	}
+}

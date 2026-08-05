@@ -46,6 +46,10 @@ reporting, and scripting with exit codes.
 -allow-whole-bucket-scan        explicit opt-in to empty-prefix enumeration
 -key pattern                    object-key filter (client-side; cuts GETs, not LIST work)
 -grep pattern                   content filter; omit for list-only mode (no downloads)
+-category name                  named pattern from the config file (pattern.<name> = regex);
+                                resolves to -grep so regexes never need typing
+-cat                            no pattern: download and print entire logs line by line
+                                (default without a pattern is listing file names only)
 -F                              -key/-grep are fixed strings, not regex
 -i                              case-insensitive matching
 -ext list                       e.g. .gz,.log (case-insensitive)
@@ -134,6 +138,52 @@ case-insensitive (`ERROR`, `error`, `Error`).
 For layouts that don't follow this structure, `-key` remains available
 as a client-side *object-key* filter: it still lists every key under
 the prefix but downloads only the ones matching the pattern.
+
+#### Name your regexes once, pick them by category
+
+Patterns differ by the kind of application being scanned, and long
+regexes are painful to retype and easy to mistype. Define them once in
+the config file — `pattern.<name> = <regex>`, repeated lines for the
+same name OR-combine — and select by name with `-category`:
+
+```
+# ~/.config/s3logscan/config
+cluster-name = hbase-prod
+pattern.spark = ERROR|Exception
+pattern.spark = Caused by
+pattern.oom   = OutOfMemoryError|Container killed on request|exit code 137
+pattern.hbase = (ERROR|FATAL).*(regionserver|WAL)
+```
+
+```
+s3logscan -app-id application_1700000000000_0042 -category spark
+```
+
+An unknown category is a fail-fast error that lists what the file
+defines (`available: hbase, oom, spark`) — a typo never silently turns
+a search into an unfiltered scan. `-category` with `-grep` on the
+command line is a usage error; a CLI `-grep` overrides a file-provided
+`category` standing default. Category patterns are always regular
+expressions (`-F` does not apply); pattern regexes are validated when
+the file is read, with file and line number.
+
+#### No pattern: list the files, or dump the whole log
+
+With no `-grep`/`-category` at all, the tool lists the application's
+file names and downloads nothing — that is the default fallback. When
+you want the actual log content, `-cat` downloads and prints entire
+logs line by line, with the usual key/line prefixes, grouping, and
+budgets:
+
+```
+s3logscan -app-id application_1700000000000_0042        # file names only
+s3logscan -app-id application_1700000000000_0042 -cat   # full log content
+```
+
+`-cat` works as a config standing default too (`cat = true`): it
+applies to patternless runs and steps aside whenever a pattern is in
+play. Combining an explicit `-cat` with `-grep`/`-category` is a
+usage error.
 
 #### Save the run as a Markdown report
 
