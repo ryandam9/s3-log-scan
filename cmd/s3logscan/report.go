@@ -14,13 +14,15 @@ import (
 // terminal run must be stripped back to plain text for the report.
 var ansiSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-// reportPath is where -md writes: ~/logscan/<app-id>.md.
-func reportPath(appID string) (string, error) {
+// reportPath is where -md writes: ~/logscan/<yyyy-mm-dd>/<app-id>.md,
+// the date directory grouping reports by run day in local time (the
+// same clock the report's Generated header shows).
+func reportPath(appID string, now time.Time) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home directory for the -md report: %w", err)
 	}
-	return filepath.Join(home, "logscan", appID+".md"), nil
+	return filepath.Join(home, "logscan", now.Format("2006-01-02"), appID+".md"), nil
 }
 
 // fenceFor returns a backtick fence long enough that content can never

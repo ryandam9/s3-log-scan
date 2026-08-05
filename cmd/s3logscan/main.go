@@ -203,9 +203,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if opts.Category != "" {
 			patternDisplay = opts.Category + " → " + opts.GrepPattern
 		}
-		path, err := reportPath(opts.AppID)
+		// One clock reading names the date directory and stamps the
+		// Generated header, so the two can never straddle midnight.
+		now := time.Now()
+		path, err := reportPath(opts.AppID, now)
 		if err == nil {
-			err = writeMDReport(path, opts.AppID, patternDisplay, mdScopes, mdMatched, mdBuf.String(), time.Now())
+			err = writeMDReport(path, opts.AppID, patternDisplay, mdScopes, mdMatched, mdBuf.String(), now)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "s3logscan: %v\n", err)

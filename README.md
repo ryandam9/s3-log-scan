@@ -71,7 +71,7 @@ reporting, and scripting with exit codes.
 -request-payer requester        requester-pays buckets
 -expected-bucket-owner id       cross-account safety check
 -sanitize-output bool           default true
--md                             write a Markdown report to ~/logscan/<app-id>.md:
+-md                             write a Markdown report to ~/logscan/<yyyy-mm-dd>/<app-id>.md:
                                 matched file names + the screen output (needs -app-id, -grep)
 -max-warnings N                 default 100
 -region string                  AWS region override
@@ -191,7 +191,7 @@ usage error.
 s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep 'ERROR' -md
 ```
 
-`-md` writes `~/logscan/<app-id>.md` when the run ends (interrupted
+`-md` writes `~/logscan/<yyyy-mm-dd>/<app-id>.md` when the run ends — reports group by run day, dated in local time — (interrupted
 runs included), alongside the normal screen output. The Generated
 timestamp is in the machine's local time zone. The report has two
 `sh`-fenced sections: the names of the files where the pattern was
