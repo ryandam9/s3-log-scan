@@ -97,8 +97,8 @@ Examples:
   matches grouped per file) under ~/logscan/<yyyy-mm-dd>/:
     s3logscan -cluster-name hbase-prod -app-id application_1700000000000_0042 -grep ERROR -md
 
-  Patterns you use often can be named in the config file
-  (pattern.<name> = <regex>) and picked by name — no regex typing:
+  Patterns you use often can be named in the config file's patterns
+  mapping and picked by name — no regex typing:
     s3logscan -app-id application_1700000000000_0042 -category spark
 
   No pattern at all: list the application's files (the default), or
@@ -123,16 +123,20 @@ Examples:
     s3logscan -bucket b -prefix logs/ -after 2026-07-20 -before 2026-07-21 -grep ERROR
 
 Config file:
-  Standing defaults are read from ~/.config/s3logscan/config (override
-  the path with -config FILE). One "flag = value" per line, # comments
-  allowed; any flag given on the command line takes priority. Lines of
-  the form "pattern.<name> = <regex>" define the named categories that
-  -category picks from; repeated lines for one name OR-combine. Example:
-      cluster-name = hbase-prod
-      i = true
-      progress = 2s
-      pattern.spark = ERROR|Exception|Caused by
-      pattern.oom = OutOfMemoryError|exit code 137
+  Standing defaults are read from ~/.config/s3logscan/config.yaml (or
+  .yml; override the path with -config FILE). YAML: keys are the flag
+  names; any flag given on the command line takes priority. The
+  "patterns" mapping defines the named categories -category picks
+  from — each name a regex or a list of regexes that OR-combine
+  (quote a regex if it starts with a YAML-special character). Example:
+      cluster-name: hbase-prod
+      i: true
+      progress: 2s
+      patterns:
+        spark:
+          - ERROR|Exception
+          - Caused by
+        oom: OutOfMemoryError|exit code 137
   With that in place, a scan is just:
       s3logscan -app-id application_..._0042 -category spark
 
@@ -163,7 +167,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.BoolVar(&o.AllowWholeBucketScan, "allow-whole-bucket-scan", false, "explicit opt-in to empty-prefix enumeration of the whole bucket")
 	fs.StringVar(&o.KeyPattern, "key", "", "object-key filter (client-side; cuts GETs, not LIST work)")
 	fs.StringVar(&o.GrepPattern, "grep", "", "content filter; omit for list-only mode (no downloads)")
-	fs.StringVar(&o.Category, "category", "", "named pattern from the config file (pattern.<name> = <regex>); resolves to -grep so the regex never needs typing")
+	fs.StringVar(&o.Category, "category", "", "named pattern from the config file's patterns mapping; resolves to -grep so the regex never needs typing")
 	fs.BoolVar(&o.Cat, "cat", false, "no pattern: download and print entire logs line by line (default without -grep/-category is listing file names only)")
 	fs.BoolVar(&o.FixedString, "F", false, "-key/-grep are fixed strings, not regex")
 	fs.BoolVar(&o.IgnoreCase, "i", false, "case-insensitive matching")
@@ -194,7 +198,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.BoolVar(&o.Verbose, "verbose", false, "log each listing page and each object as scanning starts (stderr)")
 	fs.StringVar(&o.Color, "color", "auto", `colorize results: "auto" (only when stdout is a terminal), "always", or "never"`)
 	fs.BoolVar(&o.Group, "group", false, "print each object key once as a heading with its matches indented below (default: on when stdout is a terminal; -group=false forces flat lines)")
-	fs.StringVar(&o.ConfigFile, "config", "", "config file with 'flag = value' defaults (default: ~/.config/s3logscan/config if present); command-line flags take priority")
+	fs.StringVar(&o.ConfigFile, "config", "", "YAML config file with standing defaults (default: ~/.config/s3logscan/config.yaml or .yml if present); command-line flags take priority")
 	return fs, o
 }
 
