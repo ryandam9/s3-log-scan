@@ -50,6 +50,8 @@ reporting, and scripting with exit codes.
                                 resolves to -grep so regexes never need typing
 -cat                            no pattern: download and print entire logs line by line
                                 (default without a pattern is listing file names only)
+-download                       store the app's log files locally, as-is, under
+                                ~/logscan/<yyyy-mm-dd>/<app-id>/ (requires -app-id)
 -F                              -key/-grep are fixed strings, not regex
 -i                              case-insensitive matching
 -ext list                       e.g. .gz,.log (case-insensitive)
@@ -186,6 +188,36 @@ s3logscan -app-id application_1700000000000_0042 -cat   # full log content
 applies to patternless runs and steps aside whenever a pattern is in
 play. Combining an explicit `-cat` with `-grep`/`-category` is a
 usage error.
+
+#### Download the full logs and keep them
+
+When you have only an application ID and want the actual log files on
+disk — no pattern, no reading in the terminal — `-download` stores
+every object of the application locally:
+
+```
+s3logscan -app-id application_1700000000000_0042 -download
+```
+
+```
+s3logscan: scanning s3://my-emr-logs/logs/j-1ABC/containers/application_1700000000000_0042/
+s3logscan: downloading to ~/logscan/2026-08-05/application_1700000000000_0042
+s3://…/container_01_000001/stderr.gz -> ~/logscan/2026-08-05/application_1700000000000_0042/container_01_000001/stderr.gz
+…
+```
+
+Files land under `~/logscan/<yyyy-mm-dd>/<app-id>/` (same date
+directory as `-md` reports), mirroring the S3 layout below the
+application prefix. Objects are stored **as-is** — `.gz` stays
+compressed (open with `zless`, or use `-cat` when you want the
+decompressed content printed). The scan machinery still applies:
+listing filters (`-ext`, `-after`/`-before`, `-max-size`), ETag
+If-Match consistency, per-object error classification, and the final
+summary (`downloaded N MiB`). A failed copy never leaves a partial
+file behind. `-download` requires `-app-id` and cannot be combined
+with `-grep`/`-category`/`-cat`; `download: true` also works as a
+config standing default that applies only to patternless app-scoped
+runs.
 
 #### Save the run as a Markdown report
 

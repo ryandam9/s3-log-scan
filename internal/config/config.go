@@ -44,6 +44,7 @@ type Options struct {
 	GrepPattern string
 	Category    string
 	Cat         bool
+	Download    bool
 	FixedString bool
 	IgnoreCase  bool
 
@@ -101,10 +102,12 @@ Examples:
   mapping and picked by name — no regex typing:
     s3logscan -app-id application_1700000000000_0042 -category spark
 
-  No pattern at all: list the application's files (the default), or
-  download and print the entire logs with -cat:
+  No pattern at all: list the application's files (the default), print
+  the entire logs with -cat, or store them locally with -download
+  (files land under ~/logscan/<yyyy-mm-dd>/<app-id>/, as-is):
     s3logscan -app-id application_1700000000000_0042
     s3logscan -app-id application_1700000000000_0042 -cat
+    s3logscan -app-id application_1700000000000_0042 -download
 
   Discover which application logged an error (step logs first):
     s3logscan -bucket my-emr-logs -prefix logs/j-1ABC/ \
@@ -169,6 +172,7 @@ func NewFlagSet(name string, out io.Writer) (*flag.FlagSet, *Options) {
 	fs.StringVar(&o.GrepPattern, "grep", "", "content filter; omit for list-only mode (no downloads)")
 	fs.StringVar(&o.Category, "category", "", "named pattern from the config file's patterns mapping; resolves to -grep so the regex never needs typing")
 	fs.BoolVar(&o.Cat, "cat", false, "no pattern: download and print entire logs line by line (default without -grep/-category is listing file names only)")
+	fs.BoolVar(&o.Download, "download", false, "store the application's log files locally under ~/logscan/<yyyy-mm-dd>/<app-id>/, as-is (requires -app-id; no pattern)")
 	fs.BoolVar(&o.FixedString, "F", false, "-key/-grep are fixed strings, not regex")
 	fs.BoolVar(&o.IgnoreCase, "i", false, "case-insensitive matching")
 	fs.StringVar(&o.ExtList, "ext", "", "comma-separated extension allow-list, e.g. .gz,.log (case-insensitive)")
@@ -226,6 +230,14 @@ func (o *Options) Build() (*scan.Config, error) {
 	// resolved pattern.
 	if o.Cat && o.GrepPattern != "" {
 		return nil, fmt.Errorf("-cat prints entire logs; it cannot be combined with -grep or -category")
+	}
+	if o.Download {
+		if o.GrepPattern != "" || o.Cat {
+			return nil, fmt.Errorf("-download stores raw log files; it cannot be combined with -grep, -category, or -cat")
+		}
+		if o.AppID == "" {
+			return nil, fmt.Errorf("-download requires -app-id (files are stored under ~/logscan/<yyyy-mm-dd>/<app-id>/)")
+		}
 	}
 	if o.MDReport {
 		if o.AppID == "" {
@@ -298,7 +310,7 @@ func (o *Options) Build() (*scan.Config, error) {
 	cfg := &scan.Config{
 		Bucket:              o.Bucket,
 		Prefix:              o.Prefix,
-		ListOnly:            o.GrepPattern == "" && !o.Cat,
+		ListOnly:            o.GrepPattern == "" && !o.Cat && !o.Download,
 		SmallestFirst:       o.SmallestFirst,
 		SmallestFirstWindow: o.SmallestFirstWindow,
 		Workers:             o.Workers,

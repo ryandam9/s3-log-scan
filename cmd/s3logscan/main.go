@@ -107,6 +107,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if opts.Cat && !cliSet["cat"] && fileSet["cat"] && opts.GrepPattern != "" {
 		opts.Cat = false
 	}
+	// Same standing-default rule for "download: true" in the config
+	// file: it applies only to patternless app-scoped runs.
+	if opts.Download && !cliSet["download"] && fileSet["download"] && (opts.AppID == "" || opts.GrepPattern != "" || opts.Cat) {
+		opts.Download = false
+	}
 
 	// "md = true" in the config file is a standing default, not a
 	// demand: it applies when the run is app-scoped with a pattern
@@ -218,6 +223,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return false
 	}
 
+	// -download: one destination for the whole run; every scope stores
+	// into it (an application lives on one cluster, so same-name
+	// sibling scopes contribute nothing but an empty listing).
+	downloadDest := ""
+	if opts.Download {
+		var err error
+		downloadDest, err = downloadDir(opts.AppID, time.Now())
+		if err != nil {
+			fmt.Fprintf(stderr, "s3logscan: %v\n", err)
+			return 2
+		}
+		fmt.Fprintf(stderr, "s3logscan: downloading to %s\n", downloadDest)
+	}
+
 	// One engine run per scope, sequentially. -max-total-matches is a
 	// budget across ALL scopes: each run gets what the previous runs
 	// left over. Exit codes combine by severity (2 > 3 > 0 > 1);
@@ -235,6 +254,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		runCfg.Bucket = sc.Bucket
 		runCfg.Prefix = sc.Prefix
 		runCfg.MaxTotalMatches = remaining
+		runCfg.DownloadDir = downloadDest
 
 		// Unless -region was given explicitly, resolve each bucket's
 		// actual region (log destinations can differ per cluster) so
