@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -536,5 +538,59 @@ func TestEngineRecordMatch(t *testing.T) {
 				t.Fatalf("b.log matches: %v", b)
 			}
 		})
+	}
+}
+
+// -download: every surviving object is stored as-is under DownloadDir
+// with its key path relative to the prefix; the screen shows where
+// each file landed.
+func TestEngineDownloadMode(t *testing.T) {
+	f := newFakeS3(1000)
+	f.put("logs/app/c_01/stderr.gz", "compressed-bytes-as-is")
+	f.put("logs/app/c_01/stdout.gz", "more-bytes")
+	dest := t.TempDir()
+	cfg := testConfig(t, "")
+	cfg.ListOnly = false
+	cfg.Prefix = "logs/app/"
+	cfg.DownloadDir = dest
+	res, out, _ := runEngine(t, cfg, f)
+	for rel, want := range map[string]string{
+		"c_01/stderr.gz": "compressed-bytes-as-is",
+		"c_01/stdout.gz": "more-bytes",
+	} {
+		data, err := os.ReadFile(filepath.Join(dest, rel))
+		if err != nil {
+			t.Fatalf("%s: %v", rel, err)
+		}
+		if string(data) != want {
+			t.Fatalf("%s content %q want %q", rel, data, want)
+		}
+	}
+	if got := res.Counters.MatchedObjects.Load(); got != 2 {
+		t.Fatalf("downloaded count %d want 2", got)
+	}
+	if !strings.Contains(out, "stderr.gz -> "+filepath.Join(dest, "c_01/stderr.gz")) {
+		t.Fatalf("output must show the local destination:\n%s", out)
+	}
+	if code := ExitCode(res); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+// A key with ".." segments must never escape the download directory.
+func TestEngineDownloadTraversalGuard(t *testing.T) {
+	f := newFakeS3(1000)
+	f.put("logs/app/../../evil.txt", "nope")
+	dest := filepath.Join(t.TempDir(), "dest")
+	cfg := testConfig(t, "")
+	cfg.ListOnly = false
+	cfg.Prefix = "logs/app/"
+	cfg.DownloadDir = dest
+	res, _, stderr := runEngine(t, cfg, f)
+	if _, err := os.Stat(filepath.Join(dest, "..", "..", "evil.txt")); err == nil {
+		t.Fatal("traversal key escaped the download directory")
+	}
+	if res.Counters.OtherErrors.Load() != 1 || !strings.Contains(stderr, "escapes the download directory") {
+		t.Fatalf("guard not reported: errs=%d stderr=%s", res.Counters.OtherErrors.Load(), stderr)
 	}
 }

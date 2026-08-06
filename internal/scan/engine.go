@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -67,6 +70,12 @@ type Config struct {
 	// order (called from the writer goroutine; safe to read after Run
 	// returns). The -md report uses it to rebuild matches per file.
 	RecordMatch func(Result)
+
+	// DownloadDir switches the run into download mode: every surviving
+	// object is stored under this local directory as-is (raw bytes,
+	// key path relative to Prefix preserved) instead of being scanned.
+	// Empty = normal scanning.
+	DownloadDir string
 }
 
 // RunResult is what the engine hands back to main for exit-code and
@@ -396,6 +405,54 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
+// saveObject streams one object to DownloadDir, preserving the key
+// path relative to the scan prefix. A partial file left by a failed
+// copy is removed — the directory either has the whole object or
+// nothing. Success counts as scannedFully + matchedObjects (the file
+// was delivered) and prints the local path, so the screen shows where
+// each file landed as it completes.
+func (e *Engine) saveObject(ctx context.Context, d ObjectDescriptor, body io.Reader, writer *Writer) {
+	rel := strings.TrimPrefix(d.Key, e.cfg.Prefix)
+	if rel == "" {
+		rel = path.Base(d.Key)
+	}
+	local := filepath.Join(e.cfg.DownloadDir, filepath.FromSlash(rel))
+	// S3 keys may contain ".." segments; never let one escape the
+	// destination directory.
+	if root := filepath.Clean(e.cfg.DownloadDir); local != root && !strings.HasPrefix(local, root+string(filepath.Separator)) {
+		e.counters.AddError(ErrClassOther)
+		e.warner.Warnf("s3://%s/%s: key escapes the download directory; skipped", e.cfg.Bucket, SanitizeString(d.Key))
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		e.counters.AddError(ErrClassOther)
+		e.warner.Warnf("s3://%s/%s: %v", e.cfg.Bucket, SanitizeString(d.Key), err)
+		return
+	}
+	f, err := os.Create(local)
+	if err != nil {
+		e.counters.AddError(ErrClassOther)
+		e.warner.Warnf("s3://%s/%s: %v", e.cfg.Bucket, SanitizeString(d.Key), err)
+		return
+	}
+	_, copyErr := io.Copy(f, body)
+	if closeErr := f.Close(); copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		os.Remove(local)
+		if runCancelled(ctx) {
+			return
+		}
+		e.counters.AddError(classifyRequestError(ctx, copyErr))
+		e.warner.Warnf("s3://%s/%s: %v", e.cfg.Bucket, SanitizeString(d.Key), copyErr)
+		return
+	}
+	e.counters.ScannedFully.Add(1)
+	e.counters.MatchedObjects.Add(1)
+	writer.Emit(ctx, Result{Bucket: e.cfg.Bucket, Key: d.Key + " -> " + local, KeyOnly: true})
+}
+
 // restoredCopyAvailable interprets the ListObjectsV2 RestoreStatus
 // attribute: a readable restored copy exists when a restore is not in
 // progress and an expiry date is present.
@@ -472,6 +529,10 @@ func (e *Engine) scanOne(ctx context.Context, d ObjectDescriptor, zipSem chan st
 	defer resp.Body.Close()
 
 	body := &countingReader{r: resp.Body, n: &e.counters.BytesDownloaded}
+	if e.cfg.DownloadDir != "" {
+		e.saveObject(ctx, d, body, writer)
+		return
+	}
 	outcome := ScanObject(objCtx, e.cfg.Bucket, &d, body, format, &e.cfg.Scan, writer, &e.counters)
 
 	if e.cfg.GroupOutput {

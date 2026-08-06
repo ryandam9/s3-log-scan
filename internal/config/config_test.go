@@ -208,3 +208,24 @@ func TestCatConflicts(t *testing.T) {
 		t.Fatalf("-md with -cat: %v", err)
 	}
 }
+
+// -download stores raw files: app-scoped, patternless.
+func TestDownloadValidation(t *testing.T) {
+	o, _ := parse(t, "-cluster-name", "h", "-app-id", "application_1_2", "-download")
+	cfg, err := o.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListOnly {
+		t.Fatal("-download must not be list-only (workers must run)")
+	}
+	if err := build(t, "-bucket", "b", "-prefix", "p", "-download"); err == nil || !strings.Contains(err.Error(), "-download requires -app-id") {
+		t.Fatalf("download without app-id: %v", err)
+	}
+	if err := build(t, "-cluster-name", "h", "-app-id", "application_1_2", "-download", "-grep", "x"); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("download with grep: %v", err)
+	}
+	if err := build(t, "-cluster-name", "h", "-app-id", "application_1_2", "-download", "-cat"); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("download with cat: %v", err)
+	}
+}

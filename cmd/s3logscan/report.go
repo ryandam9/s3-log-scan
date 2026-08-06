@@ -29,6 +29,17 @@ func reportPath(appID string, now time.Time) (string, error) {
 	return filepath.Join(home, "logscan", now.Format("2006-01-02"), appID+".md"), nil
 }
 
+// downloadDir is where -download stores files:
+// ~/logscan/<yyyy-mm-dd>/<app-id>/ — a sibling of the -md report for
+// the same application and day.
+func downloadDir(appID string, now time.Time) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory for -download: %w", err)
+	}
+	return filepath.Join(home, "logscan", now.Format("2006-01-02"), appID), nil
+}
+
 // fenceFor returns a backtick fence long enough that content can never
 // close it early: one backtick more than the longest run in the
 // content, minimum the standard three.
